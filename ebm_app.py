@@ -455,7 +455,7 @@ col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     st.metric(
-        label="Total Audience Reach", 
+        label="Total Audience Growth", 
         value=f"{int(kpis['followers'][0]):,}", 
         delta=f"{kpis['followers'][1]:+.1f}% MoM" if kpis['followers'][1] else "0.0% MoM"
     )
