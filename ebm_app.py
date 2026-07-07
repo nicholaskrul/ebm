@@ -60,6 +60,8 @@ def load_all_data():
         
     df_m = pd.DataFrame(metrics_data)
     if not df_m.empty:
+        # Safely drop rows entirely missing a log date to avoid conversion issues
+        df_m = df_m.dropna(subset=['Date'])
         df_m['Date'] = pd.to_datetime(df_m['Date'])
         ssi_col = [col for col in df_m.columns if col.startswith('SSI')][0] if [col for col in df_m.columns if col.startswith('SSI')] else 'SSI'
         df_m = df_m.rename(columns={ssi_col: 'SSI'})
@@ -76,6 +78,7 @@ def load_all_data():
         
     df_p = pd.DataFrame(posts_data)
     if not df_p.empty and 'Publish Date' in df_p.columns:
+        df_p = df_p.dropna(subset=['Publish Date'])
         df_p['Publish Date'] = pd.to_datetime(df_p['Publish Date'])
         df_p['YearMonth'] = df_p['Publish Date'].dt.to_period('M')
     else:
@@ -91,11 +94,15 @@ except Exception as e:
     st.error(f"⚠️ Connection Mapping Breakpoint Encountered: {e}")
     st.stop()
 
-# Build timeline filters globally
+# Build time series selection calendars safely filtering out blank entries
 df_metrics['YearMonth'] = df_metrics['Date'].dt.to_period('M')
-available_months = sorted(df_metrics['YearMonth'].unique(), reverse=True)
+available_months = sorted(df_metrics['YearMonth'].dropna().unique(), reverse=True)
 
 st.sidebar.title("Navigation Panel")
+if not available_months:
+    st.sidebar.error("❌ No valid time tracking entries detected in Airtable.")
+    st.stop()
+
 selected_ym = st.sidebar.selectbox("📅 Reporting Horizon", available_months, format_func=lambda x: x.strftime('%B %Y'))
 
 # --- 5. COMPREHENSIVE TEAM METRICS METRIC CALCULATOR ---
@@ -123,7 +130,7 @@ for name in all_profiles_list:
     ssi_mom = s_curr - s_base
     ssi_inc = s_curr - s_early
     
-    # Calculate exact posts published during this specific report month
+    # Track content deployment indexes for this chosen specific calendar period
     month_posts = df_posts[(df_posts['Profile Name'] == name) & (df_posts['YearMonth'] == selected_ym)]
     posts_count = len(month_posts)
     
@@ -144,7 +151,7 @@ for name in all_profiles_list:
 
 df_team_standings = pd.DataFrame(team_records)
 
-# Initialize notes cache entries
+# Ensure state placeholders match profile matrices
 for name in all_profiles_list:
     if name not in st.session_state.manager_notes:
         st.session_state.manager_notes[name] = ""
@@ -152,6 +159,7 @@ for name in all_profiles_list:
 
 # --- 6. TOP-LEVEL DASHBOARD SYSTEM SEGMENTATION ---
 tab_team, tab_individual = st.tabs(["👥 Combined Team Overview", "🎯 Individual Profile Deep Dive"])
+
 
 # ==========================================
 # 👥 TAB 1: MASTER COMBINED TEAM METRIC HUB
@@ -216,6 +224,7 @@ with tab_team:
             f_mom_cls = "pos" if row['Followers MoM%'] >= 0 else "neg"
             s_mom_cls = "pos" if row['SSI MoM Shift'] >= 0 else "neg"
             s_inc_cls = "pos" if row['SSI Inc Shift'] >= 0 else "neg"
+            date_str = row['Date'].strftime('%Y-%m-%d') if pd.notna(row['Date']) else 'N/A'
             
             rows_html += f"""
             <tr>
