@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 from pyairtable import Api
 from datetime import datetime
+import io
+from weasyprint import HTML
 
 # --- 1. APPLICATION CONFIGURATION & VISUAL STYLING ---
 st.set_page_config(
@@ -11,7 +13,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Clean, corporate metric layout optimization
 st.markdown("""
 <style>
     [data-testid="stMetricValue"] { font-size: 28px; font-weight: bold; }
@@ -20,7 +21,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- 2. CREDENTIAL AUTHENTICATION ---
-# Securely sources credentials from Streamlit's secrets pipeline
 AIRTABLE_TOKEN = st.secrets.get("AIRTABLE_TOKEN")
 BASE_ID = st.secrets.get("BASE_ID")
 
@@ -28,7 +28,6 @@ if not AIRTABLE_TOKEN or not BASE_ID:
     st.error("❌ Configuration Missing! Please define your `AIRTABLE_TOKEN` and `BASE_ID` inside your secret management dashboard.")
     st.stop()
 
-# Initialize API client configurations
 api = Api(AIRTABLE_TOKEN)
 profiles_table = api.table(BASE_ID, "Profiles")
 metrics_table = api.table(BASE_ID, "Weekly Metrics")
@@ -36,34 +35,31 @@ posts_table = api.table(BASE_ID, "Posts and content")
 
 
 # --- 3. DATA RECONCILIATION & PIPELINE ENGINE ---
-@st.cache_data(ttl=600)  # Caches Airtable round-trips for 10 minutes
+@st.cache_data(ttl=600)
 def load_all_data():
-    # A. Extract payload from targets
     raw_profiles = profiles_table.all()
     raw_metrics = metrics_table.all()
     raw_posts = posts_table.all()
     
-    # B. Map internal AirTable Record IDs to human-readable text strings
     id_to_name = {r['id']: r['fields'].get('Full Name', 'Unknown') for r in raw_profiles}
+    id_to_title = {r['id']: r['fields'].get('Job Title', 'Executive') for r in raw_profiles}
     
-    # C. Transform and clean Weekly Metrics dataset
     metrics_data = []
     for r in raw_metrics:
         fields = r['fields'].copy()
         profile_ids = fields.get('Profile', [])
         fields['Profile Name'] = id_to_name.get(profile_ids[0], 'Unassigned') if profile_ids else 'Unassigned'
+        fields['Job Title'] = id_to_title.get(profile_ids[0], 'Executive') if profile_ids else 'Executive'
         metrics_data.append(fields)
         
     df_m = pd.DataFrame(metrics_data)
     if not df_m.empty:
         df_m['Date'] = pd.to_datetime(df_m['Date'])
-        # Dynamic fallback to catch variations in how the SSI column is labeled
         ssi_col = [col for col in df_m.columns if col.startswith('SSI')][0] if [col for col in df_m.columns if col.startswith('SSI')] else 'SSI'
         df_m = df_m.rename(columns={ssi_col: 'SSI'})
     else:
-        df_m = pd.DataFrame(columns=['Profile Name', 'Date', 'Total followers', 'SSI', 'Profile views', 'Appearances'])
+        df_m = pd.DataFrame(columns=['Profile Name', 'Job Title', 'Date', 'Total followers', 'SSI', 'Profile views', 'Appearances'])
 
-    # D. Transform and clean Posts/Content database (matches schema column titles)
     posts_data = []
     for r in raw_posts:
         fields = r['fields'].copy()
@@ -80,34 +76,23 @@ def load_all_data():
     return df_m, df_p
 
 
-# --- 4. ENGINE EXECUTION & UN-REDACTED ERROR REPORTING ---
 try:
     df_metrics, df_posts = load_all_data()
     st.sidebar.success("⚡ Live Database Sync Active")
 except Exception as e:
     st.error("⚠️ Connection Mapping Breakpoint Encountered:")
     st.code(str(e))
-    
-    # Evaluate explicit network error footprints
-    if "401" in str(e):
-        st.warning("Airtable System Message: Unauthorized access. Verify your Personal Access Token string formatting.")
-    elif "404" in str(e):
-        st.warning("Airtable System Message: Endpoint missing. Check your Base ID or verify exact table capitalization ('Profiles', 'Weekly Metrics', 'Posts and content').")
-    elif "403" in str(e):
-        st.warning("Airtable System Message: Forbidden access. Ensure the target Token possesses 'data.records:read' authorization scopes inside Developer Hub.")
-    
     st.stop()
 
 
-# --- 5. COMPONENT FILTERS (SIDEBAR DEPLOYMENT) ---
+# --- 4. COMPONENT FILTERS ---
 st.sidebar.image("https://cdn-icons-png.flaticon.com/512/174/174857.png", width=40)
 st.sidebar.title("Navigation Panel")
 
 if df_metrics.empty:
-    st.warning("Database setup confirmed, but no metric records were detected. Populating data log entries inside Airtable will launch the dashboard visualization engine.")
+    st.warning("Database setup confirmed, but no metric records were detected.")
     st.stop()
 
-# Filter selection interfaces
 all_profiles = sorted(df_metrics['Profile Name'].unique())
 selected_profile = st.sidebar.selectbox("🎯 Target Professional", all_profiles)
 
@@ -116,13 +101,18 @@ available_months = sorted(df_metrics['YearMonth'].unique(), reverse=True)
 selected_ym = st.sidebar.selectbox("📅 Report Horizon", available_months, format_func=lambda x: x.strftime('%B %Y'))
 
 
-# --- 6. AGGREGATION & MOM VARIATION MATHEMATICS ---
+# --- 5. AGGREGATION & MOM VARIATION MATHEMATICS ---
 profile_metrics = df_metrics[df_metrics['Profile Name'] == selected_profile].sort_values('Date')
-
 current_month_data = profile_metrics[profile_metrics['YearMonth'] == selected_ym]
 prev_month_data = profile_metrics[profile_metrics['YearMonth'] == (selected_ym - 1)]
 
 kpis = {'followers': (0, 0), 'views': (0, 0), 'appearances': (0, 0), 'ssi': (0, 0)}
+inception_data = {'followers_growth': 0, 'ssi_growth': 0}
+job_title = "Executive"
+
+if not profile_metrics.empty:
+    job_title = profile_metrics.iloc[-1].get('Job Title', 'Executive')
+    earliest_row = profile_metrics.iloc[0]
 
 if not current_month_data.empty:
     latest_row = current_month_data.iloc[-1]
@@ -131,7 +121,6 @@ if not current_month_data.empty:
     def calc_delta(field, is_absolute_diff=False):
         curr_val = latest_row.get(field, 0)
         base_val = baseline_row.get(field, 0)
-        # Avoid computational failures over blank or zero entry baselines
         if pd.isna(curr_val): curr_val = 0
         if pd.isna(base_val): base_val = 0
         
@@ -145,14 +134,323 @@ if not current_month_data.empty:
     kpis['views'] = calc_delta('Profile views')
     kpis['appearances'] = calc_delta('Appearances')
     kpis['ssi'] = calc_delta('SSI', is_absolute_diff=True)
+    
+    # Inception Growth Calculations (Current metrics minus the very first log entry in history)
+    inception_data['followers_growth'] = int(latest_row.get('Total followers', 0) - earliest_row.get('Total followers', 0))
+    inception_data['ssi_growth'] = int(latest_row.get('SSI', 0) - earliest_row.get('SSI', 0))
+
+
+# --- 6. EXPORT PDF GENERATION ENGINE (WEASYPRINT) ---
+def generate_pdf_report():
+    html_template = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <style>
+            @page {
+                size: A4;
+                margin: 20mm 15mm;
+                background-color: #f8fafc;
+            }
+            * {
+                box-sizing: border-box;
+            }
+            body {
+                font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+                color: #1e293b;
+                margin: 0;
+                padding: 0;
+                font-size: 10pt;
+                line-height: 1.5;
+            }
+            .header-container {
+                background-color: #1e3a8a;
+                color: #ffffff;
+                padding: 24px;
+                border-radius: 8px;
+                margin-bottom: 25px;
+            }
+            .header-table {
+                display: table;
+                width: 100%;
+            }
+            .header-row {
+                display: table-row;
+            }
+            .header-cell {
+                display: table-cell;
+                vertical-align: middle;
+            }
+            .header-right {
+                text-align: right;
+                font-size: 11pt;
+                color: #93c5fd;
+            }
+            h1 {
+                font-size: 20pt;
+                margin: 0 0 4px 0;
+                font-weight: 700;
+                letter-spacing: -0.5px;
+            }
+            .subtitle {
+                font-size: 12pt;
+                margin: 0;
+                color: #bfdbfe;
+            }
+            h2 {
+                font-size: 13pt;
+                color: #0f172a;
+                border-bottom: 2px solid #e2e8f0;
+                padding-bottom: 6px;
+                margin-top: 30px;
+                margin-bottom: 15px;
+                page-break-after: avoid;
+            }
+            .section-desc {
+                font-size: 10pt;
+                color: #64748b;
+                margin-top: -10px;
+                margin-bottom: 15px;
+            }
+            .grid-table {
+                display: table;
+                width: 100%;
+                border-collapse: separate;
+                border-spacing: 12px 0;
+                margin: 0 -12px 20px -12px;
+                page-break-inside: avoid;
+            }
+            .grid-row {
+                display: table-row;
+            }
+            .grid-card {
+                display: table-cell;
+                width: 50%;
+                background: #ffffff;
+                padding: 18px;
+                border-radius: 6px;
+                border: 1px solid #e2e8f0;
+                border-top: 4px solid #2563eb;
+                vertical-align: top;
+            }
+            .grid-card.alt {
+                border-top: 4px solid #0d9488;
+            }
+            .metric-title {
+                font-size: 10pt;
+                text-transform: uppercase;
+                color: #64748b;
+                font-weight: 600;
+                margin-bottom: 8px;
+            }
+            .metric-value {
+                font-size: 22pt;
+                font-weight: 700;
+                color: #0f172a;
+                margin-bottom: 12px;
+            }
+            .sub-metrics {
+                display: table;
+                width: 100%;
+                border-top: 1px solid #f1f5f9;
+                padding-top: 10px;
+            }
+            .sub-metric-row {
+                display: table-row;
+            }
+            .sub-metric-label {
+                display: table-cell;
+                font-size: 9.5pt;
+                color: #475569;
+                padding: 4px 0;
+            }
+            .sub-metric-val {
+                display: table-cell;
+                font-size: 10pt;
+                font-weight: 600;
+                text-align: right;
+                color: #0f172a;
+                padding: 4px 0;
+            }
+            .positive { color: #16a34a; }
+            .negative { color: #dc2626; }
+            
+            .plain-table {
+                display: table;
+                width: 100%;
+                background: #ffffff;
+                border: 1px solid #e2e8f0;
+                border-radius: 6px;
+                margin-bottom: 20px;
+                page-break-inside: avoid;
+            }
+            .plain-row {
+                display: table-row;
+            }
+            .plain-cell {
+                display: table-cell;
+                padding: 14px 18px;
+                border-bottom: 1px solid #e2e8f0;
+            }
+            .plain-row:last-child .plain-cell {
+                border-bottom: none;
+            }
+            .plain-label {
+                font-weight: 600;
+                color: #334155;
+                width: 60%;
+            }
+            .plain-val {
+                text-align: right;
+                font-weight: 700;
+                font-size: 13pt;
+                color: #0f172a;
+            }
+            .footer {
+                text-align: center;
+                font-size: 8.5pt;
+                color: #94a3b8;
+                margin-top: 40px;
+                border-top: 1px solid #e2e8f0;
+                padding-top: 15px;
+            }
+        </style>
+    </head>
+    <body>
+
+        <div class="header-container">
+            <div class="header-table">
+                <div class="header-row">
+                    <div class="header-cell">
+                        <h1>__PROFILE_NAME__</h1>
+                        <div class="subtitle">__TITLE__</div>
+                    </div>
+                    <div class="header-cell header-right">
+                        <strong>Executive Performance Brief</strong><br>
+                        __MONTH_STR__
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <h2>Network Audience Metrics</h2>
+        <div class="section-desc">Analysis of total market reach and growth variations over the active performance horizon.</div>
+        
+        <div class="grid-table">
+            <div class="grid-row">
+                <div class="grid-card">
+                    <div class="metric-title">Total Followers</div>
+                    <div class="metric-value">__FOLLOWERS_VAL__</div>
+                    
+                    <div class="sub-metrics">
+                        <div class="sub-metric-row">
+                            <div class="sub-metric-label">Month-on-Month Growth</div>
+                            <div class="sub-metric-val __FOL_CLASS__">
+                                __FOL_MOM__
+                            </div>
+                        </div>
+                        <div class="sub-metric-row">
+                            <div class="sub-metric-label">Net Growth Since Inception</div>
+                            <div class="sub-metric-val positive">__FOL_INC__</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="grid-card alt">
+                    <div class="metric-title">Social Selling Index (SSI)</div>
+                    <div class="metric-value">__SSI_VAL__ <span style="font-size: 11pt; color: #64748b; font-weight: normal;">/ 100</span></div>
+                    
+                    <div class="sub-metrics">
+                        <div class="sub-metric-row">
+                            <div class="sub-metric-label">Month-on-Month Shift</div>
+                            <div class="sub-metric-val __SSI_CLASS__">
+                                __SSI_MOM__
+                            </div>
+                        </div>
+                        <div class="sub-metric-row">
+                            <div class="sub-metric-label">Net Shift Since Inception</div>
+                            <div class="sub-metric-val __SSI_INC_CLASS__">
+                                __SSI_INC__
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <h2>Profile Visibility & Interactions</h2>
+        <div class="section-desc">Key metadata signaling profile organically discovered traffic volumes and search engine placement indexes.</div>
+
+        <div class="plain-table">
+            <div class="plain-row">
+                <div class="plain-cell plain-label">Profile Discovery Views (Last 90 Days)</div>
+                <div class="plain-cell plain-val">__VIEWS_VAL__</div>
+            </div>
+            <div class="plain-row">
+                <div class="plain-cell plain-label">Search Appearances Queries</div>
+                <div class="plain-cell plain-val">__APP_VAL__</div>
+            </div>
+        </div>
+
+        <div class="footer">
+            Generated via LinkedIn Executive Hub Integration Engine • Confidential Executive Document
+        </div>
+
+    </body>
+    </html>
+    """
+    
+    fol_mom_val = kpis['followers'][1]
+    ssi_mom_val = kpis['ssi'][1]
+    ssi_inc_val = inception_data['ssi_growth']
+    
+    # Clean token replacing maps to completely bypass css bracket clashing
+    formatted_html = html_template.replace("__PROFILE_NAME__", selected_profile)\
+                                  .replace("__TITLE__", job_title)\
+                                  .replace("__MONTH_STR__", selected_ym.strftime('%B %Y'))\
+                                  .replace("__FOLLOWERS_VAL__", f"{int(kpis['followers'][0]):,}")\
+                                  .replace("__FOL_MOM__", f"{fol_mom_val:+.1f}%")\
+                                  .replace("__FOL_CLASS__", "positive" if fol_mom_val >= 0 else "negative")\
+                                  .replace("__FOL_INC__", f"+{inception_data['followers_growth']:,}")\
+                                  .replace("__SSI_VAL__", f"{int(kpis['ssi'][0])}")\
+                                  .replace("__SSI_MOM__", f"{ssi_mom_val:+g} pts")\
+                                  .replace("__SSI_CLASS__", "positive" if ssi_mom_val >= 0 else "negative")\
+                                  .replace("__SSI_INC__", f"{ssi_inc_val:+g} pts")\
+                                  .replace("__SSI_INC_CLASS__", "positive" if ssi_inc_val >= 0 else "negative")\
+                                  .replace("__VIEWS_VAL__", f"{int(kpis['views'][0]):,}")\
+                                  .replace("__APP_VAL__", f"{int(kpis['appearances'][0]):,}")
+    
+    pdf_buffer = io.BytesIO()
+    HTML(string=formatted_html).write_pdf(pdf_buffer)
+    return pdf_buffer.getvalue()
 
 
 # --- 7. EXECUTIVE FRONTEND DASHBOARD INTERFACE ---
 st.title(f"📈 Performance Analysis: {selected_profile}")
-st.markdown(f"Monthly evaluation brief tracking performance indexes across **{selected_ym.strftime('%B %Y')}** relative to matching historical timelines.")
+st.markdown(f"Monthly evaluation brief tracking performance indexes across **{selected_ym.strftime('%B %Y')}**.")
+
+# Add PDF Generation action to the sidebar control hub
+st.sidebar.markdown("---")
+st.sidebar.subheader("🗂️ Report Generation")
+with st.sidebar:
+    if not current_month_data.empty:
+        try:
+            pdf_data = generate_pdf_report()
+            st.download_button(
+                label="📥 Export Monthly PDF Report",
+                data=pdf_data,
+                file_name=f"LinkedIn_Report_{selected_profile}_{selected_ym.strftime('%Y_%m')}.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
+        except Exception as e:
+            st.error(f"PDF Generator Error: {e}")
+    else:
+        st.info("Select a month with log entries to enable PDF exporting.")
+
 st.markdown("---")
 
-# Layout Quadrants: Core High-Level KPIs
 col1, col2, col3, col4 = st.columns(4)
 
 with col1:
@@ -185,7 +483,6 @@ with col4:
 
 st.markdown("---")
 
-# Layout Row: Time Series Trend Visualizations vs Raw Structural Data Maps
 chart_col, table_col = st.columns([2, 1])
 
 with chart_col:
@@ -204,30 +501,3 @@ with table_col:
         st.dataframe(display_raw.set_index('Date'), use_container_width=True)
     else:
         st.info("No recorded time entries map against the designated tracking horizon.")
-
-st.markdown("---")
-
-# Layout Segment: Content Optimization & Engagement Analysis
-st.subheader("🏆 Leading Content Performance Highlight")
-
-profile_posts = df_posts[
-    (df_posts['Profile Name'] == selected_profile) & 
-    (df_posts['Publish Date'].dt.to_period('M') == selected_ym)
-] if not df_posts.empty else pd.DataFrame()
-
-if not profile_posts.empty and 'Impressions' in profile_posts.columns:
-    # Identify record containing supreme monthly impressions volume
-    top_post = profile_posts.sort_values(by='Impressions', ascending=False).iloc[0]
-    
-    p_col1, p_col2 = st.columns([1, 2])
-    with p_col1:
-        st.info(f"**💡 Editorial Focus / Hook Summary:**\n\n*{top_post.get('Topic', 'No Overview Value Logged')}*")
-        if pd.notna(top_post.get('Post URL')):
-            st.link_button("🔗 Launch Live Content Link", top_post['Post URL'])
-            
-    with p_col2:
-        metric_p1, metric_p2 = st.columns(2)
-        metric_p1.metric("Organic Impressions", f"{int(top_post.get('Impressions', 0)):,}")
-        metric_p2.metric("Total Engagement Interactions", f"{int(top_post.get('Engagement', 0)):,}")
-else:
-    st.info("No content marketing metrics or interactions were logged for this creator during this month.")
