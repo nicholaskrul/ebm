@@ -22,7 +22,6 @@ st.markdown('''
 ''', unsafe_allow_html=True)
 
 # --- 2. STATE MANAGEMENT FOR INTERACTIVE COMMENTS ---
-# Caches text input strings in memory so selections or tab changes don't wipe your typed notes
 if "manager_notes" not in st.session_state:
     st.session_state.manager_notes = {}
 
@@ -37,6 +36,7 @@ if not AIRTABLE_TOKEN or not BASE_ID:
 api = Api(AIRTABLE_TOKEN)
 profiles_table = api.table(BASE_ID, "Profiles")
 metrics_table = api.table(BASE_ID, "Weekly Metrics")
+posts_table = api.table(BASE_ID, "Posts and content")
 
 
 # --- 4. DATA RECONCILIATION & PIPELINE ENGINE ---
@@ -44,10 +44,12 @@ metrics_table = api.table(BASE_ID, "Weekly Metrics")
 def load_all_data():
     raw_profiles = profiles_table.all()
     raw_metrics = metrics_table.all()
+    raw_posts = posts_table.all()
     
     id_to_name = {r['id']: r['fields'].get('Full Name', 'Unknown') for r in raw_profiles}
     id_to_title = {r['id']: r['fields'].get('Job Title', 'Executive') for r in raw_profiles}
     
+    # Process Metrics Table
     metrics_data = []
     for r in raw_metrics:
         fields = r['fields'].copy()
@@ -64,30 +66,39 @@ def load_all_data():
     else:
         df_m = pd.DataFrame(columns=['Profile Name', 'Job Title', 'Date', 'Total followers', 'SSI', 'Profile views', 'Appearances'])
         
-    return df_m
+    # Process Posts Table
+    posts_data = []
+    for r in raw_posts:
+        fields = r['fields'].copy()
+        profile_ids = fields.get('Profile', [])
+        fields['Profile Name'] = id_to_name.get(profile_ids[0], 'Unassigned') if profile_ids else 'Unassigned'
+        posts_data.append(fields)
+        
+    df_p = pd.DataFrame(posts_data)
+    if not df_p.empty and 'Publish Date' in df_p.columns:
+        df_p['Publish Date'] = pd.to_datetime(df_p['Publish Date'])
+        df_p['YearMonth'] = df_p['Publish Date'].dt.to_period('M')
+    else:
+        df_p = pd.DataFrame(columns=['Profile Name', 'Publish Date', 'YearMonth'])
+        
+    return df_m, df_p
 
 
 try:
-    df_metrics = load_all_data()
+    df_metrics, df_posts = load_all_data()
     st.sidebar.success("⚡ Live Database Sync Active")
 except Exception as e:
     st.error(f"⚠️ Connection Mapping Breakpoint Encountered: {e}")
-    st.stop()
-
-if df_metrics.empty:
-    st.warning("Database setup confirmed, but no metric records were detected.")
     st.stop()
 
 # Build timeline filters globally
 df_metrics['YearMonth'] = df_metrics['Date'].dt.to_period('M')
 available_months = sorted(df_metrics['YearMonth'].unique(), reverse=True)
 
-# Global configuration selectors located in the sidebar panel
 st.sidebar.title("Navigation Panel")
 selected_ym = st.sidebar.selectbox("📅 Reporting Horizon", available_months, format_func=lambda x: x.strftime('%B %Y'))
 
 # --- 5. COMPREHENSIVE TEAM METRICS METRIC CALCULATOR ---
-# Automatically extracts data variations, loops through every individual profile, and measures MoM and Inception status codes
 all_profiles_list = sorted(df_metrics['Profile Name'].unique())
 team_records = []
 
@@ -98,24 +109,24 @@ for name in all_profiles_list:
     c_month = prof_df[prof_df['YearMonth'] == selected_ym]
     p_month = prof_df[prof_df['YearMonth'] == (selected_ym - 1)]
     
-    # Baseline defaults
     earliest = prof_df.iloc[0]
     latest = c_month.iloc[-1] if not c_month.empty else prof_df.iloc[-1]
     baseline = p_month.iloc[-1] if not p_month.empty else (c_month.iloc[0] if not c_month.empty else earliest)
     
-    # Clean null extraction variables
     f_curr, f_base, f_early = latest.get('Total followers', 0), baseline.get('Total followers', 0), earliest.get('Total followers', 0)
     s_curr, s_base, s_early = latest.get('SSI', 0), baseline.get('SSI', 0), earliest.get('SSI', 0)
     v_curr = latest.get('Profile views', 0)
     a_curr = latest.get('Appearances', 0)
     
-    # Math engines
     fol_mom = ((f_curr - f_base) / f_base * 100) if f_base else 0
     fol_inc = f_curr - f_early
     ssi_mom = s_curr - s_base
     ssi_inc = s_curr - s_early
     
-    # Store clean tracking parameters
+    # Calculate exact posts published during this specific report month
+    month_posts = df_posts[(df_posts['Profile Name'] == name) & (df_posts['YearMonth'] == selected_ym)]
+    posts_count = len(month_posts)
+    
     team_records.append({
         'Profile Name': name,
         'Job Title': latest.get('Job Title', 'Executive'),
@@ -127,12 +138,13 @@ for name in all_profiles_list:
         'SSI Inc Shift': ssi_inc,
         'Views': v_curr,
         'Appearances': a_curr,
+        'Posts Published': posts_count,
         'Date': latest['Date']
     })
 
 df_team_standings = pd.DataFrame(team_records)
 
-# Initialize blank placeholder strings inside cache keys if not already present
+# Initialize notes cache entries
 for name in all_profiles_list:
     if name not in st.session_state.manager_notes:
         st.session_state.manager_notes[name] = ""
@@ -146,10 +158,9 @@ tab_team, tab_individual = st.tabs(["👥 Combined Team Overview", "🎯 Individ
 # ==========================================
 with tab_team:
     st.subheader("👥 Managed Portfolio Summary Leaderboard")
-    st.markdown("Aggregated standings with cross-profile analytics tracking overall and monthly data pipelines side by side.")
+    st.markdown("Aggregated standings with cross-profile analytics tracking overall, monthly progress, and content velocity.")
     st.markdown("---")
     
-    # Expandable input interface for typewriter commentaries
     with st.expander("📝 Edit Executive Monthly Commentary Notes"):
         st.info("The insights you enter below will automatically render directly inside the interactive master table and any generated PDF documents.")
         cmt_cols = st.columns(2)
@@ -162,7 +173,6 @@ with tab_team:
                     key=f"team_notes_{name}"
                 )
                 
-    # Function generating the wide, descriptive matrix view for printing
     def generate_team_progress_pdf(df_source):
         html_template = """
         <!DOCTYPE html><html><head><meta charset='utf-8'><style>
@@ -185,12 +195,12 @@ with tab_team:
             <table>
                 <thead>
                     <tr>
-                        <th style="width: 18%;">Executive Name & Title</th>
-                        <th style="width: 20%;">Follower Growth Progress</th>
-                        <th style="width: 20%;">SSI Index Progress</th>
-                        <th style="width: 12%;">Profile Views</th>
-                        <th style="width: 12%;">Search Apps</th>
-                        <th style="width: 18%;">Manager Performance Summary</th>
+                        <th style="width: 15%;">Executive Name & Title</th>
+                        <th style="width: 18%;">Follower Growth Progress</th>
+                        <th style="width: 18%;">SSI Index Progress</th>
+                        <th style="width: 10%;">Posts Published</th>
+                        <th style="width: 14%;">Views & Appearances</th>
+                        <th style="width: 25%;">Manager Performance Summary</th>
                     </tr>
                 </thead>
                 <tbody>__ROWS__</tbody>
@@ -220,8 +230,11 @@ with tab_team:
                     <span class='section-lbl'>Monthly:</span> <span class='{s_mom_cls}'>{row['SSI MoM Shift']:+g} pts MoM</span><br>
                     <span class='section-lbl'>Overall:</span> <span class='{s_inc_cls}'>{row['SSI Inc Shift']:+g} pts Incept</span>
                 </td>
-                <td><strong style='font-size:10pt;'>{int(row['Views']):,}</strong></td>
-                <td><strong style='font-size:10pt;'>{int(row['Appearances']):,}</strong></td>
+                <td style='text-align: center;'><strong style='font-size:12pt; color:#0a66c2;'>{int(row['Posts Published'])}</strong><br><span style='font-size:7.5pt; color:#64748b;'>Published</span></td>
+                <td>
+                    <span class='section-lbl'>Discovery Views:</span> <strong>{int(row['Views']):,}</strong><br>
+                    <span class='section-lbl'>Search Apps:</span> <strong>{int(row['Appearances']):,}</strong>
+                </td>
                 <td>{note_html}</td>
             </tr>
             """
@@ -231,7 +244,7 @@ with tab_team:
         HTML(string=final_html).write_pdf(buf)
         return buf.getvalue()
 
-    # Layout generation controls
+
     try:
         team_report_bytes = generate_team_progress_pdf(df_team_standings)
         st.download_button(
@@ -243,21 +256,20 @@ with tab_team:
     except Exception as pdf_err:
         st.error(f"PDF Compiler Error: {pdf_err}")
 
-    # Metrics Layout Panel
     st.markdown("---")
-    t_col1, t_col2, t_col3 = st.columns(3)
+    t_col1, t_col2, t_col3, t_col4 = st.columns(4)
     t_col1.metric("Total Managed Core Network Pool", f"{df_team_standings['Followers'].sum():,} Professionals")
     t_col2.metric("Portfolio Average SSI Standing", f"{int(df_team_standings['SSI'].mean())}/100")
-    t_col3.metric("Combined Active Views (Period)", f"{df_team_standings['Views'].sum():,}")
+    t_col3.metric("Total Pool Content Output", f"{df_team_standings['Posts Published'].sum()} Posts")
+    t_col4.metric("Combined Active Views (Period)", f"{df_team_standings['Views'].sum():,}")
 
-    # Process local presentation data frame parameters
     st.markdown("### 📊 Consolidated Standings Matrix Grid")
     display_team_df = df_team_standings.copy()
     display_team_df['Manager Remarks'] = display_team_df['Profile Name'].map(lambda x: st.session_state.manager_notes.get(x, ""))
     
     st.dataframe(
         display_team_df.set_index('Profile Name')[
-            ['Job Title', 'Followers', 'Followers MoM%', 'Followers Inc Growth', 'SSI', 'SSI MoM Shift', 'SSI Inc Shift', 'Views', 'Appearances', 'Manager Remarks']
+            ['Job Title', 'Followers', 'Followers MoM%', 'Followers Inc Growth', 'SSI', 'SSI MoM Shift', 'SSI Inc Shift', 'Posts Published', 'Views', 'Appearances', 'Manager Remarks']
         ],
         use_container_width=True
     )
@@ -269,7 +281,6 @@ with tab_team:
 with tab_individual:
     selected_profile = st.selectbox("🎯 Target Professional Profiles Focus", all_profiles_list)
     
-    # Local tracking subsets
     prof_row = df_team_standings[df_team_standings['Profile Name'] == selected_profile].iloc[0]
     profile_metrics = df_metrics[df_metrics['Profile Name'] == selected_profile].sort_values('Date')
     current_month_data = profile_metrics[profile_metrics['YearMonth'] == selected_ym]
@@ -278,7 +289,6 @@ with tab_individual:
     st.markdown(f"Deep-dive performance indices mapped across **{selected_ym.strftime('%B %Y')}** timeline benchmarks.")
     st.markdown("---")
 
-    # Layout Row: Individual text input box
     ind_col_left, ind_col_right = st.columns([2, 1])
     with ind_col_right:
         st.subheader("✏️ Performance Brief Notes")
@@ -288,7 +298,6 @@ with tab_individual:
             key=f"ind_notes_{selected_profile}"
         )
         
-        # Individual report engine matching parameters perfectly
         def generate_single_progress_pdf():
             html_template = """
             <!DOCTYPE html><html><head><meta charset='utf-8'><style>
@@ -321,7 +330,8 @@ with tab_individual:
                 </div>
                 
                 <div class='card' style='border-top-color: #64748b;'>
-                    <strong>Profile Visibility Metrics This Period</strong><br>
+                    <strong>Profile Visibility & Output Metrics This Period</strong><br>
+                    • Posts Published This Month: <strong style='color:#0a66c2;'>__POSTS__ Posts</strong><br>
                     • Profile Discovery Views: <strong>__VIEWS__</strong><br>
                     • Search Appearances Indexes: <strong>__APP__</strong>
                 </div>
@@ -349,6 +359,7 @@ with tab_individual:
                                   .replace('__SSI_MOM_CLS__', 'pos' if s_mom_val >= 0 else 'neg')\
                                   .replace('__SSI_INC__', f"{s_inc_val:+g} pts Incept")\
                                   .replace('__SSI_INC_CLS__', 'pos' if s_inc_val >= 0 else 'neg')\
+                                  .replace('__POSTS__', f"{int(prof_row['Posts Published'])}")\
                                   .replace('__VIEWS__', f"{int(prof_row['Views']):,}")\
                                   .replace('__APP__', f"{int(prof_row['Appearances']):,}")\
                                   .replace('__COMMENTARY__', comment_html)
@@ -370,12 +381,12 @@ with tab_individual:
             st.error(f"Single Report Compile Error: {e}")
 
     with ind_col_left:
-        # Screen Performance Blocks
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric("Followers (Current)", f"{int(prof_row['Followers']):,}", f"{prof_row['Followers MoM%']:+.1f}% MoM")
         col2.metric("SSI Score", f"{int(prof_row['SSI'])}/100", f"{prof_row['SSI MoM Shift']:+g} pts MoM")
-        col3.metric("Profile Views", f"{int(prof_row['Views']):,}")
-        col4.metric("Search Appearances", f"{int(prof_row['Appearances']):,}")
+        col3.metric("Posts (This Month)", f"{int(prof_row['Posts Published'])}")
+        col4.metric("Profile Views", f"{int(prof_row['Views']):,}")
+        col5.metric("Search Appearances", f"{int(prof_row['Appearances']):,}")
         
         st.markdown("---")
         st.subheader("📈 Historical Growth Trajectory Baseline")
