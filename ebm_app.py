@@ -13,12 +13,12 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-st.markdown("""
+st.markdown('''
 <style>
     [data-testid="stMetricValue"] { font-size: 28px; font-weight: bold; }
     [data-testid="stMetricDelta"] { font-size: 14px; }
 </style>
-""", unsafe_allow_html=True)
+''', unsafe_allow_html=True)
 
 # --- 2. CREDENTIAL AUTHENTICATION ---
 AIRTABLE_TOKEN = st.secrets.get("AIRTABLE_TOKEN")
@@ -44,6 +44,7 @@ def load_all_data():
     id_to_name = {r['id']: r['fields'].get('Full Name', 'Unknown') for r in raw_profiles}
     id_to_title = {r['id']: r['fields'].get('Job Title', 'Executive') for r in raw_profiles}
     
+    # Process Metrics Table
     metrics_data = []
     for r in raw_metrics:
         fields = r['fields'].copy()
@@ -60,6 +61,7 @@ def load_all_data():
     else:
         df_m = pd.DataFrame(columns=['Profile Name', 'Job Title', 'Date', 'Total followers', 'SSI', 'Profile views', 'Appearances'])
 
+    # Process Posts Table
     posts_data = []
     for r in raw_posts:
         fields = r['fields'].copy()
@@ -85,419 +87,172 @@ except Exception as e:
     st.stop()
 
 
-# --- 4. COMPONENT FILTERS ---
-st.sidebar.image("https://cdn-icons-png.flaticon.com/512/174/174857.png", width=40)
-st.sidebar.title("Navigation Panel")
-
-if df_metrics.empty:
-    st.warning("Database setup confirmed, but no metric records were detected.")
-    st.stop()
-
-all_profiles = sorted(df_metrics['Profile Name'].unique())
-selected_profile = st.sidebar.selectbox("🎯 Target Professional", all_profiles)
-
-df_metrics['YearMonth'] = df_metrics['Date'].dt.to_period('M')
-available_months = sorted(df_metrics['YearMonth'].unique(), reverse=True)
-selected_ym = st.sidebar.selectbox("📅 Report Horizon", available_months, format_func=lambda x: x.strftime('%B %Y'))
+# --- 4. TOP-LEVEL VIEW SEGMENTATION (TABS) ---
+# This creates the two core operational spaces in your application dashboard
+tab_individual, tab_team = st.tabs(["🎯 Individual Deep Dive", "👥 Team Overview Leaderboard"])
 
 
-# --- 5. AGGREGATION & MOM VARIATION MATHEMATICS ---
-profile_metrics = df_metrics[df_metrics['Profile Name'] == selected_profile].sort_values('Date')
-current_month_data = profile_metrics[profile_metrics['YearMonth'] == selected_ym]
-prev_month_data = profile_metrics[profile_metrics['YearMonth'] == (selected_ym - 1)]
-
-kpis = {'followers': (0, 0), 'views': (0, 0), 'appearances': (0, 0), 'ssi': (0, 0)}
-inception_data = {'followers_growth': 0, 'ssi_growth': 0}
-job_title = "Executive"
-
-if not profile_metrics.empty:
-    job_title = profile_metrics.iloc[-1].get('Job Title', 'Executive')
-    earliest_row = profile_metrics.iloc[0]
-
-if not current_month_data.empty:
-    latest_row = current_month_data.iloc[-1]
-    baseline_row = prev_month_data.iloc[-1] if not prev_month_data.empty else current_month_data.iloc[0]
+# ==========================================
+# 🎯 TAB 1: INDIVIDUAL DEEP DIVE ARCHITECTURE
+# ==========================================
+with tab_individual:
+    st.sidebar.title("Navigation Panel")
     
-    def calc_delta(field, is_absolute_diff=False):
-        curr_val = latest_row.get(field, 0)
-        base_val = baseline_row.get(field, 0)
-        if pd.isna(curr_val): curr_val = 0
-        if pd.isna(base_val): base_val = 0
-        
-        if is_absolute_diff:
-            return curr_val, curr_val - base_val
-        else:
-            pct_change = ((curr_val - base_val) / base_val * 100) if base_val else 0
-            return curr_val, pct_change
+    if df_metrics.empty:
+        st.warning("Database setup confirmed, but no metric records were detected.")
+    else:
+        all_profiles = sorted(df_metrics['Profile Name'].unique())
+        selected_profile = st.sidebar.selectbox("🎯 Target Professional", all_profiles)
 
-    kpis['followers'] = calc_delta('Total followers')
-    kpis['views'] = calc_delta('Profile views')
-    kpis['appearances'] = calc_delta('Appearances')
-    kpis['ssi'] = calc_delta('SSI', is_absolute_diff=True)
-    
-    # Inception Growth Calculations (Current metrics minus the very first log entry in history)
-    inception_data['followers_growth'] = int(latest_row.get('Total followers', 0) - earliest_row.get('Total followers', 0))
-    inception_data['ssi_growth'] = int(latest_row.get('SSI', 0) - earliest_row.get('SSI', 0))
+        df_metrics['YearMonth'] = df_metrics['Date'].dt.to_period('M')
+        available_months = sorted(df_metrics['YearMonth'].unique(), reverse=True)
+        selected_ym = st.sidebar.selectbox("📅 Report Horizon", available_months, format_func=lambda x: x.strftime('%B %Y'))
 
+        # Mathematics Engine for Selected Profile
+        profile_metrics = df_metrics[df_metrics['Profile Name'] == selected_profile].sort_values('Date')
+        current_month_data = profile_metrics[profile_metrics['YearMonth'] == selected_ym]
+        prev_month_data = profile_metrics[profile_metrics['YearMonth'] == (selected_ym - 1)]
 
-# --- 6. EXPORT PDF GENERATION ENGINE (WEASYPRINT) ---
-def generate_pdf_report():
-    html_template = """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="utf-8">
-        <style>
-            @page {
-                size: A4;
-                margin: 20mm 15mm;
-                background-color: #f8fafc;
-            }
-            * {
-                box-sizing: border-box;
-            }
-            body {
-                font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-                color: #1e293b;
-                margin: 0;
-                padding: 0;
-                font-size: 10pt;
-                line-height: 1.5;
-            }
-            .header-container {
-                background-color: #1e3a8a;
-                color: #ffffff;
-                padding: 24px;
-                border-radius: 8px;
-                margin-bottom: 25px;
-            }
-            .header-table {
-                display: table;
-                width: 100%;
-            }
-            .header-row {
-                display: table-row;
-            }
-            .header-cell {
-                display: table-cell;
-                vertical-align: middle;
-            }
-            .header-right {
-                text-align: right;
-                font-size: 11pt;
-                color: #93c5fd;
-            }
-            h1 {
-                font-size: 20pt;
-                margin: 0 0 4px 0;
-                font-weight: 700;
-                letter-spacing: -0.5px;
-            }
-            .subtitle {
-                font-size: 12pt;
-                margin: 0;
-                color: #bfdbfe;
-            }
-            h2 {
-                font-size: 13pt;
-                color: #0f172a;
-                border-bottom: 2px solid #e2e8f0;
-                padding-bottom: 6px;
-                margin-top: 30px;
-                margin-bottom: 15px;
-                page-break-after: avoid;
-            }
-            .section-desc {
-                font-size: 10pt;
-                color: #64748b;
-                margin-top: -10px;
-                margin-bottom: 15px;
-            }
-            .grid-table {
-                display: table;
-                width: 100%;
-                border-collapse: separate;
-                border-spacing: 12px 0;
-                margin: 0 -12px 20px -12px;
-                page-break-inside: avoid;
-            }
-            .grid-row {
-                display: table-row;
-            }
-            .grid-card {
-                display: table-cell;
-                width: 50%;
-                background: #ffffff;
-                padding: 18px;
-                border-radius: 6px;
-                border: 1px solid #e2e8f0;
-                border-top: 4px solid #2563eb;
-                vertical-align: top;
-            }
-            .grid-card.alt {
-                border-top: 4px solid #0d9488;
-            }
-            .metric-title {
-                font-size: 10pt;
-                text-transform: uppercase;
-                color: #64748b;
-                font-weight: 600;
-                margin-bottom: 8px;
-            }
-            .metric-value {
-                font-size: 22pt;
-                font-weight: 700;
-                color: #0f172a;
-                margin-bottom: 12px;
-            }
-            .sub-metrics {
-                display: table;
-                width: 100%;
-                border-top: 1px solid #f1f5f9;
-                padding-top: 10px;
-            }
-            .sub-metric-row {
-                display: table-row;
-            }
-            .sub-metric-label {
-                display: table-cell;
-                font-size: 9.5pt;
-                color: #475569;
-                padding: 4px 0;
-            }
-            .sub-metric-val {
-                display: table-cell;
-                font-size: 10pt;
-                font-weight: 600;
-                text-align: right;
-                color: #0f172a;
-                padding: 4px 0;
-            }
-            .positive { color: #16a34a; }
-            .negative { color: #dc2626; }
+        kpis = {'followers': (0, 0), 'views': (0, 0), 'appearances': (0, 0), 'ssi': (0, 0)}
+        inception_data = {'followers_growth': 0, 'ssi_growth': 0}
+        job_title = "Executive"
+
+        if not profile_metrics.empty:
+            job_title = profile_metrics.iloc[-1].get('Job Title', 'Executive')
+            earliest_row = profile_metrics.iloc[0]
+
+        if not current_month_data.empty:
+            latest_row = current_month_data.iloc[-1]
+            baseline_row = prev_month_data.iloc[-1] if not prev_month_data.empty else current_month_data.iloc[0]
             
-            .plain-table {
-                display: table;
-                width: 100%;
-                background: #ffffff;
-                border: 1px solid #e2e8f0;
-                border-radius: 6px;
-                margin-bottom: 20px;
-                page-break-inside: avoid;
-            }
-            .plain-row {
-                display: table-row;
-            }
-            .plain-cell {
-                display: table-cell;
-                padding: 14px 18px;
-                border-bottom: 1px solid #e2e8f0;
-            }
-            .plain-row:last-child .plain-cell {
-                border-bottom: none;
-            }
-            .plain-label {
-                font-weight: 600;
-                color: #334155;
-                width: 60%;
-            }
-            .plain-val {
-                text-align: right;
-                font-weight: 700;
-                font-size: 13pt;
-                color: #0f172a;
-            }
-            .footer {
-                text-align: center;
-                font-size: 8.5pt;
-                color: #94a3b8;
-                margin-top: 40px;
-                border-top: 1px solid #e2e8f0;
-                padding-top: 15px;
-            }
-        </style>
-    </head>
-    <body>
+            def calc_delta(field, is_absolute_diff=False):
+                curr_val = latest_row.get(field, 0)
+                base_val = baseline_row.get(field, 0)
+                if pd.isna(curr_val): curr_val = 0
+                if pd.isna(base_val): base_val = 0
+                
+                if is_absolute_diff:
+                    return curr_val, curr_val - base_val
+                else:
+                    pct_change = ((curr_val - base_val) / base_val * 100) if base_val else 0
+                    return curr_val, pct_change
 
-        <div class="header-container">
-            <div class="header-table">
-                <div class="header-row">
-                    <div class="header-cell">
-                        <h1>__PROFILE_NAME__</h1>
-                        <div class="subtitle">__TITLE__</div>
-                    </div>
-                    <div class="header-cell header-right">
-                        <strong>Executive Performance Brief</strong><br>
-                        __MONTH_STR__
-                    </div>
-                </div>
-            </div>
-        </div>
+            kpis['followers'] = calc_delta('Total followers')
+            kpis['views'] = calc_delta('Profile views')
+            kpis['appearances'] = calc_delta('Appearances')
+            kpis['ssi'] = calc_delta('SSI', is_absolute_diff=True)
+            
+            inception_data['followers_growth'] = int(latest_row.get('Total followers', 0) - earliest_row.get('Total followers', 0))
+            inception_data['ssi_growth'] = int(latest_row.get('SSI', 0) - earliest_row.get('SSI', 0))
 
-        <h2>Network Audience Metrics</h2>
-        <div class="section-desc">Analysis of total market reach and growth variations over the active performance horizon.</div>
+        # PDF Compilation Engine
+        def generate_pdf_report():
+            html_template = """
+            <!DOCTYPE html><html><head><meta charset='utf-8'><style>@page { size: A4; margin: 20mm 15mm; background-color: #f8fafc; } body { font-family: Arial, sans-serif; color: #1e293b; padding: 0; font-size: 10pt; } .header { background: #1e3a8a; color: white; padding: 20px; border-radius: 6px; margin-bottom: 20px; } .card { background: white; padding: 15px; border: 1px solid #e2e8f0; border-top: 4px solid #2563eb; margin-bottom: 15px; } .val { font-size: 20pt; font-weight: bold; } .pos { color: #16a34a; } .neg { color: #dc2626; }</style></head><body><div class='header'><h1>__NAME__</h1><p>__TITLE__ - __MONTH__</p></div><div class='card'><div><strong>Total Followers:</strong> <span class='val'>__FOL_VAL__</span></div><p>MoM Change: <span class='__FOL_CLASS__'>__FOL_MOM__</span> | Since Inception: <span class='pos'>__FOL_INC__</span></p></div><div class='card' style='border-top-color: #0d9488;'><div><strong>SSI Score:</strong> <span class='val'>__SSI_VAL__</span></div><p>MoM Change: <span class='__SSI_CLASS__'>__SSI_MOM__</span> | Since Inception: <span class='__SSI_INC_CLASS__'>__SSI_INC__</span></p></div><div class='card' style='border-top-color: #64748b;'><p><strong>Profile Discovery Views:</strong> __VIEWS__</p><p><strong>Search Appearances Queries:</strong> __APP__</p></div></body></html>
+            """
+            fol_mom_val = kpis['followers'][1]
+            ssi_mom_val = kpis['ssi'][1]
+            ssi_inc_val = inception_data['ssi_growth']
+            
+            formatted_html = html_template.replace('__NAME__', selected_profile).replace('__TITLE__', job_title).replace('__MONTH__', selected_ym.strftime('%B %Y')).replace('__FOL_VAL__', f"{int(kpis['followers'][0]):,}").replace('__FOL_MOM__', f"{fol_mom_val:+.1f}%").replace('__FOL_CLASS__', 'pos' if fol_mom_val >= 0 else 'neg').replace('__FOL_INC__', f"+{inception_data['followers_growth']:,}").replace('__SSI_VAL__', f"{int(kpis['ssi'][0])}").replace('__SSI_MOM__', f"{ssi_mom_val:+g} pts").replace('__SSI_CLASS__', 'pos' if ssi_mom_val >= 0 else 'neg').replace('__SSI_INC__', f"{ssi_inc_val:+g} pts").replace('__SSI_INC_CLASS__', 'pos' if ssi_inc_val >= 0 else 'neg').replace('__VIEWS__', f"{int(kpis['views'][0]):,}").replace('__APP__', f"{int(kpis['appearances'][0]):,}")
+            pdf_buffer = io.BytesIO()
+            HTML(string=formatted_html).write_pdf(pdf_buffer)
+            return pdf_buffer.getvalue()
+
+        # UI Layout Construction
+        st.subheader(f"📈 Performance Analysis: {selected_profile}")
         
-        <div class="grid-table">
-            <div class="grid-row">
-                <div class="grid-card">
-                    <div class="metric-title">Total Followers</div>
-                    <div class="metric-value">__FOLLOWERS_VAL__</div>
-                    
-                    <div class="sub-metrics">
-                        <div class="sub-metric-row">
-                            <div class="sub-metric-label">Month-on-Month Growth</div>
-                            <div class="sub-metric-val __FOL_CLASS__">
-                                __FOL_MOM__
-                            </div>
-                        </div>
-                        <div class="sub-metric-row">
-                            <div class="sub-metric-label">Net Growth Since Inception</div>
-                            <div class="sub-metric-val positive">__FOL_INC__</div>
-                        </div>
-                    </div>
-                </div>
+        # Sidebar Action Trigger
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("🗂️ Report Generation")
+        if not current_month_data.empty:
+            try:
+                pdf_data = generate_pdf_report()
+                st.sidebar.download_button(label="📥 Export Monthly PDF Report", data=pdf_data, file_name=f"LinkedIn_Report_{selected_profile}_{selected_ym.strftime('%Y_%m')}.pdf", mime="application/pdf", use_container_width=True)
+            except Exception as e:
+                st.sidebar.error(f"PDF Generator Error: {e}")
+        else:
+            st.sidebar.info("Select a month with entries to enable PDF exporting.")
 
-                <div class="grid-card alt">
-                    <div class="metric-title">Social Selling Index (SSI)</div>
-                    <div class="metric-value">__SSI_VAL__ <span style="font-size: 11pt; color: #64748b; font-weight: normal;">/ 100</span></div>
-                    
-                    <div class="sub-metrics">
-                        <div class="sub-metric-row">
-                            <div class="sub-metric-label">Month-on-Month Shift</div>
-                            <div class="sub-metric-val __SSI_CLASS__">
-                                __SSI_MOM__
-                            </div>
-                        </div>
-                        <div class="sub-metric-row">
-                            <div class="sub-metric-label">Net Shift Since Inception</div>
-                            <div class="sub-metric-val __SSI_INC_CLASS__">
-                                __SSI_INC__
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
+        # Metric Displays
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric(label="Total Audience Reach", value=f"{int(kpis['followers'][0]):,}", delta=f"{kpis['followers'][1]:+.1f}% MoM" if kpis['followers'][1] else "0.0% MoM")
+        col2.metric(label="Profile Discovery Views", value=f"{int(kpis['views'][0]):,}", delta=f"{kpis['views'][1]:+.1f}% MoM" if kpis['views'][1] else "0.0% MoM")
+        col3.metric(label="Search Appearances", value=f"{int(kpis['appearances'][0]):,}", delta=f"{kpis['appearances'][1]:+.1f}% MoM" if kpis['appearances'][1] else "0.0% MoM")
+        col4.metric(label="Social Selling Index", value=f"{int(kpis['ssi'][0])}/100", delta=f"{kpis['ssi'][1]:+g} pts MoM" if kpis['ssi'][1] else "0 pts")
 
-        <h2>Profile Visibility & Interactions</h2>
-        <div class="section-desc">Key metadata signaling profile organically discovered traffic volumes and search engine placement indexes.</div>
+        st.markdown("---")
+        chart_col, table_col = st.columns([2, 1])
+        with chart_col:
+            st.subheader("📈 Long-Term Growth Vector")
+            chart_df = profile_metrics.set_index('Date')[['Total followers']]
+            st.line_chart(chart_df, color="#0a66c2")
+        with table_col:
+            st.subheader("📋 Core Data Logs This Period")
+            if not current_month_data.empty:
+                display_raw = current_month_data[['Date', 'Total followers', 'Profile views', 'Appearances', 'SSI']].copy()
+                display_raw['Date'] = display_raw['Date'].dt.strftime('%Y-%m-%d')
+                st.dataframe(display_raw.set_index('Date'), use_container_width=True)
 
-        <div class="plain-table">
-            <div class="plain-row">
-                <div class="plain-cell plain-label">Profile Discovery Views (Last 90 Days)</div>
-                <div class="plain-cell plain-val">__VIEWS_VAL__</div>
-            </div>
-            <div class="plain-row">
-                <div class="plain-cell plain-label">Search Appearances Queries</div>
-                <div class="plain-cell plain-val">__APP_VAL__</div>
-            </div>
-        </div>
 
-        <div class="footer">
-            Generated via LinkedIn Executive Hub Integration Engine • Confidential Executive Document
-        </div>
-
-    </body>
-    </html>
-    """
+# ==========================================
+# 👥 TAB 2: TEAM OVERVIEW LEADERBOARD
+# ==========================================
+with tab_team:
+    st.subheader("👥 Combined Team Performance Hub")
+    st.markdown("Real-time comparative summary across all managed executive profiles, tracking live standing benchmarks and trailing content outputs.")
+    st.markdown("---")
     
-    fol_mom_val = kpis['followers'][1]
-    ssi_mom_val = kpis['ssi'][1]
-    ssi_inc_val = inception_data['ssi_growth']
-    
-    # Clean token replacing maps to completely bypass css bracket clashing
-    formatted_html = html_template.replace("__PROFILE_NAME__", selected_profile)\
-                                  .replace("__TITLE__", job_title)\
-                                  .replace("__MONTH_STR__", selected_ym.strftime('%B %Y'))\
-                                  .replace("__FOLLOWERS_VAL__", f"{int(kpis['followers'][0]):,}")\
-                                  .replace("__FOL_MOM__", f"{fol_mom_val:+.1f}%")\
-                                  .replace("__FOL_CLASS__", "positive" if fol_mom_val >= 0 else "negative")\
-                                  .replace("__FOL_INC__", f"+{inception_data['followers_growth']:,}")\
-                                  .replace("__SSI_VAL__", f"{int(kpis['ssi'][0])}")\
-                                  .replace("__SSI_MOM__", f"{ssi_mom_val:+g} pts")\
-                                  .replace("__SSI_CLASS__", "positive" if ssi_mom_val >= 0 else "negative")\
-                                  .replace("__SSI_INC__", f"{ssi_inc_val:+g} pts")\
-                                  .replace("__SSI_INC_CLASS__", "positive" if ssi_inc_val >= 0 else "negative")\
-                                  .replace("__VIEWS_VAL__", f"{int(kpis['views'][0]):,}")\
-                                  .replace("__APP_VAL__", f"{int(kpis['appearances'][0]):,}")
-    
-    pdf_buffer = io.BytesIO()
-    HTML(string=formatted_html).write_pdf(pdf_buffer)
-    return pdf_buffer.getvalue()
+    if not df_metrics.empty:
+        # A. Calculate 30-Day Rolling Window for Post Counts
+        current_time = pd.Timestamp.now().normalize()
+        thirty_days_ago = current_time - pd.Timedelta(days=30)
+        
+        if not df_posts.empty and 'Publish Date' in df_posts.columns:
+            recent_posts = df_posts[df_posts['Publish Date'] >= thirty_days_ago]
+            post_counts_series = recent_posts.groupby('Profile Name').size()
+        else:
+            post_counts_series = pd.Series(dtype=int)
 
-
-# --- 7. EXECUTIVE FRONTEND DASHBOARD INTERFACE ---
-st.title(f"📈 Performance Analysis: {selected_profile}")
-st.markdown(f"Monthly evaluation brief tracking performance indexes across **{selected_ym.strftime('%B %Y')}**.")
-
-# Add PDF Generation action to the sidebar control hub
-st.sidebar.markdown("---")
-st.sidebar.subheader("🗂️ Report Generation")
-with st.sidebar:
-    if not current_month_data.empty:
-        try:
-            pdf_data = generate_pdf_report()
-            st.download_button(
-                label="📥 Export Monthly PDF Report",
-                data=pdf_data,
-                file_name=f"LinkedIn_Report_{selected_profile}_{selected_ym.strftime('%Y_%m')}.pdf",
-                mime="application/pdf",
-                use_container_width=True
-            )
-        except Exception as e:
-            st.error(f"PDF Generator Error: {e}")
+        # B. Isolate the absolute latest metric record for each individual person
+        latest_indices = df_metrics.groupby('Profile Name')['Date'].idxmax()
+        team_summary_df = df_metrics.loc[latest_indices].copy()
+        
+        # Map Post Count values back into the primary comparative overview frame
+        team_summary_df['Posts (Past 30 Days)'] = team_summary_df['Profile Name'].map(post_counts_series).fillna(0).astype(int)
+        
+        # Clean up presentation columns
+        team_summary_df = team_summary_df.rename(columns={
+            'Profile Name': 'Executive Name',
+            'Total followers': 'Followers Count',
+            'Profile views': 'Profile Views',
+            'Appearances': 'Search Appearances',
+            'Date': 'Last Updated Log'
+        })
+        
+        # Format the time value clearly
+        team_summary_df['Last Updated Log'] = team_summary_df['Last Updated Log'].dt.strftime('%Y-%m-%d')
+        
+        # Sort layout by highest total audience base
+        team_summary_df = team_summary_df.sort_values(by='Followers Count', ascending=False)
+        
+        # C. Generate Visual Metric Summaries for Key Parameters
+        team_col1, team_col2, team_col3 = st.columns(3)
+        with team_col1:
+            st.metric("Total Combined Managed Pool Reach", f"{team_summary_df['Followers Count'].sum():,}")
+        with team_col2:
+            st.metric("Total Content Actions (Past 30 Days)", f"{team_summary_df['Posts (Past 30 Days)'].sum()} Posts")
+        with team_col3:
+            st.metric("Highest Team SSI Standing", f"{int(team_summary_df['SSI'].max())}/100")
+            
+        st.markdown("### 🏆 Live Multi-Profile Matrix Standing")
+        
+        # Display the stylized data frame matrix
+        st.dataframe(
+            team_summary_df.set_index('Executive Name')[
+                ['Followers Count', 'Posts (Past 30 Days)', 'SSI', 'Profile Views', 'Search Appearances', 'Job Title', 'Last Updated Log']
+            ],
+            use_container_width=True
+        )
     else:
-        st.info("Select a month with log entries to enable PDF exporting.")
-
-st.markdown("---")
-
-col1, col2, col3, col4 = st.columns(4)
-
-with col1:
-    st.metric(
-        label="Total Audience Growth", 
-        value=f"{int(kpis['followers'][0]):,}", 
-        delta=f"{kpis['followers'][1]:+.1f}% MoM" if kpis['followers'][1] else "0.0% MoM"
-    )
-
-with col2:
-    st.metric(
-        label="Profile Discovery Views", 
-        value=f"{int(kpis['views'][0]):,}", 
-        delta=f"{kpis['views'][1]:+.1f}% MoM" if kpis['views'][1] else "0.0% MoM"
-    )
-
-with col3:
-    st.metric(
-        label="Search Appearances", 
-        value=f"{int(kpis['appearances'][0]):,}", 
-        delta=f"{kpis['appearances'][1]:+.1f}% MoM" if kpis['appearances'][1] else "0.0% MoM"
-    )
-
-with col4:
-    st.metric(
-        label="Social Selling Index", 
-        value=f"{int(kpis['ssi'][0])}/100", 
-        delta=f"{kpis['ssi'][1]:+g} pts MoM" if kpis['ssi'][1] else "0 pts"
-    )
-
-st.markdown("---")
-
-chart_col, table_col = st.columns([2, 1])
-
-with chart_col:
-    st.subheader("📈 Long-Term Growth Vector (All-Time)")
-    if not profile_metrics.empty:
-        chart_df = profile_metrics.set_index('Date')[['Total followers']]
-        st.line_chart(chart_df, color="#0a66c2")
-    else:
-        st.info("Historical tracking points are insufficient to project directional trajectory curves.")
-
-with table_col:
-    st.subheader("📋 Core Data Logs This Period")
-    if not current_month_data.empty:
-        display_raw = current_month_data[['Date', 'Total followers', 'Profile views', 'Appearances', 'SSI']].copy()
-        display_raw['Date'] = display_raw['Date'].dt.strftime('%Y-%m-%d')
-        st.dataframe(display_raw.set_index('Date'), use_container_width=True)
-    else:
-        st.info("No recorded time entries map against the designated tracking horizon.")
+        st.info("Log parameters into your active database tables to generate comparative metrics.")
