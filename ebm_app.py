@@ -332,12 +332,12 @@ with tab_team:
                 <td>
                     <span class='section-lbl'>Total Base:</span> <strong>{int(row['Followers']):,}</strong><br>
                     <span class='section-lbl'>Monthly:</span> <span class='{f_mom_cls}'>{row['Followers MoM%']:+.1f}% MoM</span><br>
-                    <span class='section-lbl'>Overall:</span> <span class='pos'>+{int(row['Followers Inc Growth']):,} Incept</span>
+                    <span class='section-lbl'>Overall:</span> <span class='pos'>+{int(row['Followers Inc Growth']):,} since since inception</span>
                 </td>
                 <td>
                     <span class='section-lbl'>Current Standing:</span> <strong>{int(row['SSI'])}/100</strong><br>
                     <span class='section-lbl'>Monthly:</span> <span class='{s_mom_cls}'>{row['SSI MoM Shift']:+g} pts MoM</span><br>
-                    <span class='section-lbl'>Overall:</span> <span class='{s_inc_cls}'>{row['SSI Inc Shift']:+g} pts Incept</span>
+                    <span class='section-lbl'>Overall:</span> <span class='{s_inc_cls}'>{row['SSI Inc Shift']:+g} pts since inception</span>
                 </td>
                 <td style='text-align: center;'><strong style='font-size:12pt; color:#0a66c2;'>{int(row['Posts Published'])}</strong><br><span style='font-size:7.5pt; color:#64748b;'>Published</span></td>
                 <td>
@@ -469,7 +469,7 @@ with tab_individual:
                     <div class='val'>__FOL_CURR__</div>
                     <strong>Total Audience Reach</strong><br>
                     • Monthly Delta: <span class='__FOL_MOM_CLS__'>__FOL_MOM__</span><br>
-                    • Cumulative Growth (Inception): <span class='pos'>+__FOL_INC__ Followers</span>
+                    • Cumulative Growth (Since Inception): <span class='pos'>+__FOL_INC__ Followers</span>
                 </div>
                 <div class='card' style='border-top-color: #0d9488;'>
                     <div class='val'>__SSI_CURR__ / 100</div>
@@ -575,7 +575,7 @@ with tab_individual:
                                   .replace('__SSI_CURR__', f"{int(prof_row['SSI'])}")\
                                   .replace('__SSI_MOM__', f"{s_mom_val:+g} pts MoM")\
                                   .replace('__SSI_MOM_CLS__', 'pos' if s_mom_val >= 0 else 'neg')\
-                                  .replace('__SSI_INC__', f"{s_inc_val:+g} pts Incept")\
+                                  .replace('__SSI_INC__', f"{s_inc_val:+g} pts Since inception")\
                                   .replace('__SSI_INC_CLS__', 'pos' if s_inc_val >= 0 else 'neg')\
                                   .replace('__POSTS__', f"{int(prof_row['Posts Published'])}")\
                                   .replace('__VIEWS__', f"{int(prof_row['Views']):,}")\
