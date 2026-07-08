@@ -3,6 +3,9 @@ import pandas as pd
 from pyairtable import Api
 from datetime import datetime
 import io
+import requests
+from urllib3.util import Retry
+from requests.adapters import HTTPAdapter
 from weasyprint import HTML
 
 # --- 1. APPLICATION CONFIGURATION & VISUAL STYLING ---
@@ -25,7 +28,7 @@ st.markdown('''
 if "manager_notes" not in st.session_state:
     st.session_state.manager_notes = {}
 
-# --- 3. CREDENTIAL AUTHENTICATION ---
+# --- 3. CREDENTIAL AUTHENTICATION & RATE LIMIT PROTECTION ---
 AIRTABLE_TOKEN = st.secrets.get("AIRTABLE_TOKEN")
 BASE_ID = st.secrets.get("BASE_ID")
 
@@ -33,14 +36,23 @@ if not AIRTABLE_TOKEN or not BASE_ID:
     st.error("❌ Configuration Missing! Define your `AIRTABLE_TOKEN` and `BASE_ID` inside your secret management dashboard.")
     st.stop()
 
-api = Api(AIRTABLE_TOKEN)
+session = requests.Session()
+retries = Retry(
+    total=5,                                    
+    backoff_factor=1,                           
+    status_forcelist=[429, 500, 502, 503, 504], 
+    raise_on_status=True
+)
+session.mount("https://", HTTPAdapter(max_retries=retries))
+
+api = Api(AIRTABLE_TOKEN, session=session)
 profiles_table = api.table(BASE_ID, "Profiles")
 metrics_table = api.table(BASE_ID, "Weekly Metrics")
 posts_table = api.table(BASE_ID, "Posts and content")
 
 
 # --- 4. DATA RECONCILIATION & PIPELINE ENGINE ---
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=600)  
 def load_all_data():
     raw_profiles = profiles_table.all()
     raw_metrics = metrics_table.all()
@@ -60,7 +72,6 @@ def load_all_data():
         
     df_m = pd.DataFrame(metrics_data)
     if not df_m.empty:
-        # Safely drop rows entirely missing a log date to avoid conversion issues
         df_m = df_m.dropna(subset=['Date'])
         df_m['Date'] = pd.to_datetime(df_m['Date'])
         ssi_col = [col for col in df_m.columns if col.startswith('SSI')][0] if [col for col in df_m.columns if col.startswith('SSI')] else 'SSI'
@@ -94,7 +105,6 @@ except Exception as e:
     st.error(f"⚠️ Connection Mapping Breakpoint Encountered: {e}")
     st.stop()
 
-# Build time series selection calendars safely filtering out blank entries
 df_metrics['YearMonth'] = df_metrics['Date'].dt.to_period('M')
 available_months = sorted(df_metrics['YearMonth'].dropna().unique(), reverse=True)
 
@@ -130,7 +140,6 @@ for name in all_profiles_list:
     ssi_mom = s_curr - s_base
     ssi_inc = s_curr - s_early
     
-    # Track content deployment indexes for this chosen specific calendar period
     month_posts = df_posts[(df_posts['Profile Name'] == name) & (df_posts['YearMonth'] == selected_ym)]
     posts_count = len(month_posts)
     
@@ -151,7 +160,6 @@ for name in all_profiles_list:
 
 df_team_standings = pd.DataFrame(team_records)
 
-# Ensure state placeholders match profile matrices
 for name in all_profiles_list:
     if name not in st.session_state.manager_notes:
         st.session_state.manager_notes[name] = ""
@@ -170,7 +178,6 @@ with tab_team:
     st.markdown("---")
     
     with st.expander("📝 Edit Executive Monthly Commentary Notes"):
-        st.info("The insights you enter below will automatically render directly inside the interactive master table and any generated PDF documents.")
         cmt_cols = st.columns(2)
         for idx, name in enumerate(all_profiles_list):
             target_col = cmt_cols[0] if idx % 2 == 0 else cmt_cols[1]
@@ -200,6 +207,11 @@ with tab_team:
                 <h1>Executive Portfolio Progress Report</h1>
                 <p class='subtitle'>Combined Standings Tracker & Performance Horizons Index — __HORIZON__</p>
             </div>
+            <div style='display: table; width: 100%; margin-bottom: 15px;'>
+                <div style='display: table-cell; background: white; border: 1px solid #cbd5e1; padding: 10px; text-align: center;'><strong>Total Reach:</strong> __TOTAL_REACH__</div>
+                <div style='display: table-cell; background: white; border: 1px solid #cbd5e1; padding: 10px; text-align: center; border-left:none;'><strong>Total Output:</strong> __TOTAL_POSTS__ Posts</div>
+                <div style='display: table-cell; background: white; border: 1px solid #cbd5e1; padding: 10px; text-align: center; border-left:none;'><strong>Average Portfolio SSI:</strong> __AVG_SSI__</div>
+            </div>
             <table>
                 <thead>
                     <tr>
@@ -224,7 +236,6 @@ with tab_team:
             f_mom_cls = "pos" if row['Followers MoM%'] >= 0 else "neg"
             s_mom_cls = "pos" if row['SSI MoM Shift'] >= 0 else "neg"
             s_inc_cls = "pos" if row['SSI Inc Shift'] >= 0 else "neg"
-            date_str = row['Date'].strftime('%Y-%m-%d') if pd.notna(row['Date']) else 'N/A'
             
             rows_html += f"""
             <tr>
@@ -248,7 +259,12 @@ with tab_team:
             </tr>
             """
         
-        final_html = html_template.replace("__ROWS__", rows_html).replace("__HORIZON__", selected_ym.strftime('%B %Y'))
+        final_html = html_template.replace("__ROWS__", rows_html)\
+                                  .replace("__HORIZON__", selected_ym.strftime('%B %Y'))\
+                                  .replace("__TOTAL_REACH__", f"{df_source['Followers'].sum():,}")\
+                                  .replace("__TOTAL_POSTS__", f"{df_source['Posts Published'].sum()}")\
+                                  .replace("__AVG_SSI__", f"{int(df_source['SSI'].mean())}/100")
+                                  
         buf = io.BytesIO()
         HTML(string=final_html).write_pdf(buf)
         return buf.getvalue()
@@ -272,10 +288,37 @@ with tab_team:
     t_col3.metric("Total Pool Content Output", f"{df_team_standings['Posts Published'].sum()} Posts")
     t_col4.metric("Combined Active Views (Period)", f"{df_team_standings['Views'].sum():,}")
 
-    st.markdown("### 📊 Consolidated Standings Matrix Grid")
+    # --- NEW: COMBINED TEAM HISTORICAL OVERVIEW GRAPHS ---
+    st.markdown("---")
+    st.subheader("📊 Combined Team Macro-Trend Vectors (All-Time History)")
+    
+    # Compile multi-profile timelines grouped securely by date stamps
+    team_trends_df = df_metrics.groupby('Date').agg({
+        'Total followers': 'sum',
+        'Profile views': 'sum',
+        'Appearances': 'sum',
+        'SSI': 'mean'
+    }).sort_index()
+    
+    tc1, tc2 = st.columns(2)
+    with tc1:
+        st.caption("👥 Combined Audience Pool Volume (Follower Growth)")
+        st.line_chart(team_trends_df[['Total followers']], color="#0a66c2")
+        
+        st.caption("🔍 Combined Organic Search Engine Appearances")
+        st.line_chart(team_trends_df[['Appearances']], color="#ff9900")
+        
+    with tc2:
+        st.caption("👀 Combined Portfolio Discovery Profile Views")
+        st.line_chart(team_trends_df[['Profile views']], color="#1db954")
+        
+        st.caption("📈 Rolling Portfolio Average Social Selling Index (SSI)")
+        st.line_chart(team_trends_df[['SSI']], color="#dc2626")
+
+    st.markdown("---")
+    st.markdown("### 📋 Detailed Cross-Profile Leaderboard")
     display_team_df = df_team_standings.copy()
     display_team_df['Manager Remarks'] = display_team_df['Profile Name'].map(lambda x: st.session_state.manager_notes.get(x, ""))
-    
     st.dataframe(
         display_team_df.set_index('Profile Name')[
             ['Job Title', 'Followers', 'Followers MoM%', 'Followers Inc Growth', 'SSI', 'SSI MoM Shift', 'SSI Inc Shift', 'Posts Published', 'Views', 'Appearances', 'Manager Remarks']
@@ -295,14 +338,13 @@ with tab_individual:
     current_month_data = profile_metrics[profile_metrics['YearMonth'] == selected_ym]
 
     st.subheader(f"📈 Strategic Progress Breakdown: {selected_profile}")
-    st.markdown(f"Deep-dive performance indices mapped across **{selected_ym.strftime('%B %Y')}** timeline benchmarks.")
     st.markdown("---")
 
     ind_col_left, ind_col_right = st.columns([2, 1])
     with ind_col_right:
         st.subheader("✏️ Performance Brief Notes")
         st.session_state.manager_notes[selected_profile] = st.text_area(
-            "Add context, action logs, or monthly achievement statements for this user's PDF brief:",
+            "Add context or monthly achievement statements for this user's PDF brief:",
             value=st.session_state.manager_notes[selected_profile],
             key=f"ind_notes_{selected_profile}"
         )
@@ -321,36 +363,32 @@ with tab_individual:
             </style></head><body>
                 <div class='header'>
                     <h1>__NAME__</h1>
-                    <p class='title'>__TITLE__ — Executive Performance Summary (__MONTH__)</p>
+                    <p class='title'>__TITLE__ — Summary Document (__MONTH__)</p>
                 </div>
-                
                 <div class='card'>
                     <div class='val'>__FOL_CURR__</div>
                     <strong>Total Audience Reach</strong><br>
                     • Monthly Delta: <span class='__FOL_MOM_CLS__'>__FOL_MOM__</span><br>
-                    • Cumulative Growth (Inception-to-Date): <span class='pos'>+__FOL_INC__ Net Followers</span>
+                    • Cumulative Growth (Inception): <span class='pos'>+__FOL_INC__ Followers</span>
                 </div>
-                
                 <div class='card' style='border-top-color: #0d9488;'>
-                    <div class='val'>__SSI_CURR__ <span style='font-size:12pt; color:#64748b; font-weight:normal;'>/ 100</span></div>
+                    <div class='val'>__SSI_CURR__ / 100</div>
                     <strong>Social Selling Index (SSI Score)</strong><br>
                     • Monthly Delta: <span class='__SSI_MOM_CLS__'>__SSI_MOM__</span><br>
-                    • Cumulative Shift (Inception-to-Date): <span class='__SSI_INC_CLS__'>__SSI_INC__</span>
+                    • Cumulative Shift (Inception): <span class='__SSI_INC_CLS__'>__SSI_INC__</span>
                 </div>
-                
                 <div class='card' style='border-top-color: #64748b;'>
                     <strong>Profile Visibility & Output Metrics This Period</strong><br>
-                    • Posts Published This Month: <strong style='color:#0a66c2;'>__POSTS__ Posts</strong><br>
+                    • Posts Published This Month: <strong>__POSTS__ Posts</strong><br>
                     • Profile Discovery Views: <strong>__VIEWS__</strong><br>
                     • Search Appearances Indexes: <strong>__APP__</strong>
                 </div>
-                
                 <h2>Manager Commentary & Tactical Alignment</h2>
                 <div class='notes-block'>__COMMENTARY__</div>
             </body></html>
             """
             txt = st.session_state.manager_notes.get(selected_profile, "").strip()
-            comment_html = txt.replace("\n", "<br>") if txt else "<em style='color:#64748b;'>No performance remarks provided for this operational timeline.</em>"
+            comment_html = txt.replace("\n", "<br>") if txt else "<em>No remarks logged.</em>"
             
             f_mom_val = prof_row['Followers MoM%']
             s_mom_val = prof_row['SSI MoM Shift']
@@ -397,6 +435,21 @@ with tab_individual:
         col4.metric("Profile Views", f"{int(prof_row['Views']):,}")
         col5.metric("Search Appearances", f"{int(prof_row['Appearances']):,}")
         
+        # --- NEW: INDIVIDUAL HISTORICAL OVERVIEW GRAPHS ---
         st.markdown("---")
-        st.subheader("📈 Historical Growth Trajectory Baseline")
-        st.line_chart(profile_metrics.set_index('Date')[['Total followers']], color="#0a66c2")
+        st.subheader("📈 Core Strategic Performance Vectors (All-Time Timeline)")
+        
+        ic1, ic2 = st.columns(2)
+        with ic1:
+            st.caption("📈 Audience Reach Growth Curve")
+            st.line_chart(profile_metrics.set_index('Date')[['Total followers']], color="#0a66c2")
+            
+            st.caption("🔍 Search Engine Appearances Volatility Index")
+            st.line_chart(profile_metrics.set_index('Date')[['Appearances']], color="#ff9900")
+            
+        with ic2:
+            st.caption("🛡️ Social Selling Index (SSI) Tracking Vector")
+            st.line_chart(profile_metrics.set_index('Date')[['SSI']], color="#dc2626")
+            
+            st.caption("👀 Inbound Profile Discovery Views")
+            st.line_chart(profile_metrics.set_index('Date')[['Profile views']], color="#1db954")
