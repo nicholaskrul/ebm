@@ -341,7 +341,7 @@ with tab_team:
                 </td>
                 <td style='text-align: center;'><strong style='font-size:12pt; color:#0a66c2;'>{int(row['Posts Published'])}</strong><br><span style='font-size:7.5pt; color:#64748b;'>Published</span></td>
                 <td>
-                    <span class='section-lbl'>Discovery Views:</span> <strong>{int(row['Views']):,}</strong><br>
+                    <span class='section-lbl'>Profile Views:</span> <strong>{int(row['Views']):,}</strong><br>
                     <span class='section-lbl'>Profile Appearances:</span> <strong>{int(row['Appearances']):,}</strong>
                 </td>
                 <td>{note_html}</td>
