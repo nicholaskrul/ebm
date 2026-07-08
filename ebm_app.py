@@ -197,22 +197,35 @@ with st.sidebar.expander("📤 Post Ingestion Center"):
     if uploaded_post_file is not None:
         if st.button("🚀 Push Post to Database", use_container_width=True):
             try:
-                # Read layout flexibly with dynamic delimiter detection to handle regional CSV layouts
+                df_upload = None
+                
+                # Smart multi-pass ingestion check to handle LinkedIn UTF-16 TSV format variants
                 if uploaded_post_file.name.endswith('.csv'):
-                    try:
-                        df_upload = pd.read_csv(uploaded_post_file)
-                        if len(df_upload.columns) < 2:
-                            uploaded_post_file.seek(0)
-                            df_upload = pd.read_csv(uploaded_post_file, sep=';')
-                    except:
+                    encodings_to_try = ['utf-8', 'utf-16', 'utf-16-le', 'latin1']
+                    separators_to_try = [',', '\t', ';']
+                    
+                    for encoding in encodings_to_try:
+                        for sep in separators_to_try:
+                            try:
+                                uploaded_post_file.seek(0)
+                                df_test = pd.read_csv(uploaded_post_file, sep=sep, encoding=encoding)
+                                if len(df_test.columns) >= 2 and len(df_test) > 5:
+                                    df_upload = df_test
+                                    break
+                            except:
+                                continue
+                        if df_upload is not None:
+                            break
+                            
+                    if df_upload is None:
                         uploaded_post_file.seek(0)
-                        df_upload = pd.read_csv(uploaded_post_file, sep=';')
+                        df_upload = pd.read_csv(uploaded_post_file)
                 else:
                     df_upload = pd.read_excel(uploaded_post_file)
                 
                 extracted_url = df_upload.columns[1] if len(df_upload.columns) > 1 else "Organic Post Link"
                 
-                # Safely rename columns to support any layout structure variations without raising indexing errors
+                # Normalizes structures flexibly to handle varied row widths seamlessly
                 num_cols = len(df_upload.columns)
                 if num_cols >= 3:
                     df_upload.columns = ['Label', 'Value', 'Pct'] + [f'Unused_{i}' for i in range(num_cols - 3)]
@@ -227,7 +240,7 @@ with st.sidebar.expander("📤 Post Ingestion Center"):
                 df_upload['Label'] = df_upload['Label'].astype(str).str.strip()
                 df_upload['Value'] = df_upload['Value'].astype(str).str.strip()
                 
-                # Highly defensive number sanitization to strip commas/spaces and prevent Airtable payload rejections
+                # Highly defensive float processor to handle alphanumeric anomalies or local comma placements
                 def read_field(label):
                     match_row = df_upload[df_upload['Label'] == label]
                     if not match_row.empty:
@@ -244,7 +257,7 @@ with st.sidebar.expander("📤 Post Ingestion Center"):
                 try: clean_date = pd.to_datetime(raw_date).strftime('%Y-%m-%d')
                 except: clean_date = datetime.today().strftime('%Y-%m-%d')
                 
-                # Calculate aggregated executive statistics
+                # Process demographics
                 companies, industries = [], []
                 computed_dm_reach = 0.0
                 decision_tiers = ['Director', 'VP', 'CXO', 'Owner', 'Partner']
@@ -291,7 +304,11 @@ with st.sidebar.expander("📤 Post Ingestion Center"):
                 st.cache_data.clear()
                 st.rerun()
             except Exception as parse_ex:
-                st.sidebar.error(f"Ingestion break: {parse_ex}")
+                # Upgraded deep-inspection mechanism to output descriptive Airtable syntax complaints
+                error_details = str(parse_ex)
+                if hasattr(parse_ex, 'response') and parse_ex.response is not None:
+                    error_details += f" | Response: {parse_ex.response.text}"
+                st.sidebar.error(f"Ingestion break: {error_details}")
 
 
 # --- 5. GRAPH ENGINE BASE64 EXPORT UTILITY ---
