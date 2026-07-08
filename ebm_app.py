@@ -97,9 +97,13 @@ def load_all_data():
         df_p = df_p.dropna(subset=['Publish Date'])
         df_p['Publish Date'] = pd.to_datetime(df_p['Publish Date'])
         df_p['YearMonth'] = df_p['Publish Date'].dt.to_period('M')
-        # Ensure performance columns are numeric and handle missing fields safely
-        df_p['Impressions'] = pd.to_numeric(df_p.get('Impressions', 0)).fillna(0)
-        df_p['Engagement'] = pd.to_numeric(df_p.get('Engagement', 0)).fillna(0)
+        
+        # FIX: Safe column parsing to ensure missing fields do not throw 'int' attribute errors
+        for metric_col in ['Impressions', 'Engagement']:
+            if metric_col in df_p.columns:
+                df_p[metric_col] = pd.to_numeric(df_p[metric_col]).fillna(0)
+            else:
+                df_p[metric_col] = 0
     else:
         df_p = pd.DataFrame(columns=['Profile Name', 'Publish Date', 'YearMonth', 'Impressions', 'Engagement'])
         
@@ -462,19 +466,16 @@ with tab_individual:
             st.caption("👀 Inbound Profile Discovery Views")
             st.line_chart(profile_metrics.set_index('Date')[['Profile views']], color="#1db954")
             
-        # --- NEW: INDIVIDUAL MONTHLY CONTENT PERFORMANCE GRAPHS ---
         st.markdown("---")
         st.subheader("📝 Monthly Content Performance Logs (Historical Vectors)")
         
         individual_posts = df_posts[df_posts['Profile Name'] == selected_profile].copy()
         if not individual_posts.empty:
-            # Group by YearMonth and calculate totals
             monthly_posts_perf = individual_posts.groupby('YearMonth').agg({
                 'Impressions': 'sum',
                 'Engagement': 'sum'
             }).sort_index()
             
-            # String convert Period index so Streamlit charts parse cleanly
             monthly_posts_perf.index = monthly_posts_perf.index.astype(str)
             
             pc1, pc2 = st.columns(2)
