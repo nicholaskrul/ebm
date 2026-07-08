@@ -46,10 +46,7 @@ retries = Retry(
     raise_on_status=True
 )
 
-# FIX: HTTPAdapter has no default timeout, so a hung network call (or a hung
-# Airtable response) would block forever with no error -- this is the most
-# likely cause of the app looking "stuck loading". TimeoutHTTPAdapter forces
-# every request to fail after a bounded time instead of hanging indefinitely.
+# Force connection timeout limits to avoid infinite main thread loading hangs
 class TimeoutHTTPAdapter(HTTPAdapter):
     def __init__(self, *args, timeout=30, **kwargs):
         self.timeout = timeout
@@ -309,7 +306,6 @@ def export_plot_to_b64(df_source, column_name, chart_type='line', color='#0a66c2
     if df_source.empty or column_name not in df_source.columns:
         return ""
 
-    # Switched to unlinked object figures to guarantee concurrent thread stability
     fig = Figure(figsize=(5.5, 2.8), facecolor='#ffffff')
     ax = fig.subplots()
     ax.set_facecolor('#ffffff')
@@ -616,7 +612,7 @@ def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, se
     return buf.getvalue()
 
 
-# --- 7. CROSS-PROFILE LEADERBOARD STANDINGS (was missing entirely) ---
+# --- 7. CROSS-PROFILE LEADERBOARD STANDINGS ---
 def compute_profile_standings(df_metrics, df_posts, all_profiles_list, selected_ym):
     """Builds one row per profile with current-month values, month-over-month
     deltas versus the prior calendar month, and cumulative growth since the
@@ -669,7 +665,7 @@ def compute_profile_standings(df_metrics, df_posts, all_profiles_list, selected_
 
 df_team_standings = compute_profile_standings(df_metrics, df_posts, all_profiles_list, selected_ym)
 
-# --- 8. TAB LAYOUT (was missing entirely) ---
+# --- 8. TAB LAYOUT ---
 tab_team, tab_individual = st.tabs(["👥 Team Overview", "🎯 Individual Deep Dive"])
 
 
@@ -700,7 +696,6 @@ with tab_team:
         'SSI': 'mean'
     }).sort_index()
 
-    # Split document rendering behind explicit layout toggles to prevent runtime freezing
     if st.button("🛠️ Compile Portfolio PDF Report"):
         try:
             team_report_bytes = generate_team_progress_pdf(
@@ -758,122 +753,128 @@ with tab_team:
 # 🎯 TAB 2: INDIVIDUAL PROFILE DEEP DIVE
 # ==========================================
 with tab_individual:
-    prof_row = df_team_standings[df_team_standings['Profile Name'] == selected_profile].iloc[0]
-    profile_metrics = df_metrics[df_metrics['Profile Name'] == selected_profile].sort_values('Date')
-    current_month_data = profile_metrics[profile_metrics['YearMonth'] == selected_ym]
+    # Safe multi-row tracking layout slice initialization
+    matching_profile_rows = df_team_standings[df_team_standings['Profile Name'] == selected_profile] if not df_team_standings.empty else pd.DataFrame()
 
-    individual_posts = df_posts[df_posts['Profile Name'] == selected_profile].copy()
-    month_posts = individual_posts[individual_posts['YearMonth'] == selected_ym] if not individual_posts.empty else pd.DataFrame()
+    if matching_profile_rows.empty:
+        st.info(f"📅 No metrics tracking matrices could be mapped out for **{selected_profile}** during this reporting horizon. Add history records in Airtable or process an organic post export to activate this space.")
+    else:
+        prof_row = matching_profile_rows.iloc[0]
+        profile_metrics = df_metrics[df_metrics['Profile Name'] == selected_profile].sort_values('Date')
+        current_month_data = profile_metrics[profile_metrics['YearMonth'] == selected_ym]
 
-    avg_dm_reach = month_posts['Decision-Maker Reach %'].mean() * 100 if not month_posts.empty and 'Decision-Maker Reach %' in month_posts.columns else 0.0
-    total_saves = month_posts['Saves'].sum() if not month_posts.empty and 'Saves' in month_posts.columns else 0
-    total_sends = month_posts['Sends on LinkedIn'].sum() if not month_posts.empty and 'Sends on LinkedIn' in month_posts.columns else 0
-    total_reposts = month_posts['Reposts'].sum() if not month_posts.empty and 'Reposts' in month_posts.columns else 0
-    total_high_intent = total_saves + total_sends + total_reposts
+        individual_posts = df_posts[df_posts['Profile Name'] == selected_profile].copy()
+        month_posts = individual_posts[individual_posts['YearMonth'] == selected_ym] if not individual_posts.empty else pd.DataFrame()
 
-    accounts_seen = [str(x) for x in month_posts['Top Target Accounts'].dropna().unique() if str(x) != ""]
-    accounts_summary_str = ", ".join(accounts_seen)[:100] if accounts_seen else "No corporate target tracking entries logged."
+        avg_dm_reach = month_posts['Decision-Maker Reach %'].mean() * 100 if not month_posts.empty and 'Decision-Maker Reach %' in month_posts.columns else 0.0
+        total_saves = month_posts['Saves'].sum() if not month_posts.empty and 'Saves' in month_posts.columns else 0
+        total_sends = month_posts['Sends on LinkedIn'].sum() if not month_posts.empty and 'Sends on LinkedIn' in month_posts.columns else 0
+        total_reposts = month_posts['Reposts'].sum() if not month_posts.empty and 'Reposts' in month_posts.columns else 0
+        total_high_intent = total_saves + total_sends + total_reposts
 
-    industries_seen = [str(x) for x in month_posts['Top Core Industries'].dropna().unique() if str(x) != ""]
-    industries_summary_str = ", ".join(industries_seen)[:100] if industries_seen else "No industrial tracking profiles mapped."
+        accounts_seen = [str(x) for x in month_posts['Top Target Accounts'].dropna().unique() if str(x) != ""]
+        accounts_summary_str = ", ".join(accounts_seen)[:100] if accounts_seen else "No corporate target tracking entries logged."
 
-    st.subheader(f"📈 Strategic Progress Breakdown: {selected_profile}")
-    st.markdown("---")
+        industries_seen = [str(x) for x in month_posts['Top Core Industries'].dropna().unique() if str(x) != ""]
+        industries_summary_str = ", ".join(industries_seen)[:100] if industries_seen else "No industrial tracking profiles mapped."
 
-    ind_col_left, ind_col_right = st.columns([2, 1])
-    with ind_col_right:
-        st.subheader("✏️ Performance Brief Notes")
-        st.text_area(
-            "Add context or monthly achievement statements for this user's PDF brief:",
-            key=f"ind_notes_{selected_profile}",
-            on_change=sync_from_ind,
-            args=(selected_profile,)
-        )
+        st.subheader(f"📈 Strategic Progress Breakdown: {selected_profile}")
+        st.markdown("---")
 
-        if st.button(f"🛠️ Prepare {selected_profile}'s Monthly Brief"):
-            try:
-                single_pdf_bytes = generate_single_progress_pdf(
-                    profile_metrics, individual_posts,
-                    st.session_state.manager_notes.get(selected_profile, ""),
-                    selected_profile, selected_ym.strftime('%B %Y'),
-                    prof_row['Followers'], prof_row['Followers MoM%'], prof_row['Followers Inc Growth'],
-                    prof_row['SSI'], prof_row['SSI MoM Shift'], prof_row['SSI Inc Shift'],
-                    prof_row['Posts Published'], prof_row['Views'], prof_row['Appearances'],
-                    avg_dm_reach, accounts_summary_str, industries_summary_str, total_high_intent
-                )
-                st.session_state.compiled_single_pdf = single_pdf_bytes
-                st.success("✨ Dossier completed successfully!")
-            except Exception as e:
-                st.error(f"Single Report Compile Error: {e}")
-
-        if "compiled_single_pdf" in st.session_state:
-            st.download_button(
-                label=f"📥 Download {selected_profile}'s Monthly PDF Brief",
-                data=st.session_state.compiled_single_pdf,
-                file_name=f"LinkedIn_Brief_{selected_profile.replace(' ', '_')}_{selected_ym.strftime('%Y_%m')}.pdf",
-                mime="application/pdf",
-                use_container_width=True
+        ind_col_left, ind_col_right = st.columns([2, 1])
+        with ind_col_right:
+            st.subheader("✏️ Performance Brief Notes")
+            st.text_area(
+                "Add context or monthly achievement statements for this user's PDF brief:",
+                key=f"ind_notes_{selected_profile}",
+                on_change=sync_from_ind,
+                args=(selected_profile,)
             )
 
-    with ind_col_left:
-        col1, col2, col3, col4, col5 = st.columns(5)
-        col1.metric("Followers (Current)", f"{int(prof_row['Followers']):,}", f"{prof_row['Followers MoM%']:+.1f}% MoM")
-        col2.metric("SSI Score", f"{int(prof_row['SSI'])}/100", f"{prof_row['SSI MoM Shift']:+g} pts MoM")
-        col3.metric("Posts (This Month)", f"{int(prof_row['Posts Published'])}")
-        col4.metric("Profile Views", f"{int(prof_row['Views']):,}")
-        col5.metric("Search Appearances", f"{int(prof_row['Appearances']):,}")
+            if st.button(f"🛠️ Prepare {selected_profile}'s Monthly Brief"):
+                try:
+                    single_pdf_bytes = generate_single_progress_pdf(
+                        profile_metrics, individual_posts,
+                        st.session_state.manager_notes.get(selected_profile, ""),
+                        selected_profile, selected_ym.strftime('%B %Y'),
+                        prof_row['Followers'], prof_row['Followers MoM%'], prof_row['Followers Inc Growth'],
+                        prof_row['SSI'], prof_row['SSI MoM Shift'], prof_row['SSI Inc Shift'],
+                        prof_row['Posts Published'], prof_row['Views'], prof_row['Appearances'],
+                        avg_dm_reach, accounts_summary_str, industries_summary_str, total_high_intent
+                    )
+                    st.session_state.compiled_single_pdf = single_pdf_bytes
+                    st.success("✨ Dossier completed successfully!")
+                except Exception as e:
+                    st.error(f"Single Report Compile Error: {e}")
 
-        st.markdown("### 🎯 Audience Quality & Account Intelligence Index")
-        aq_col1, aq_col2, aq_col3 = st.columns(3)
-        aq_col1.metric("Avg. Decision-Maker Reach", f"{avg_dm_reach:.1f}%", help="Percentage of readers carrying Director, VP, CXO, Owner, or Partner corporate hierarchy titles.")
-        aq_col2.metric("High-Intent Shares & Saves", f"{int(total_high_intent)} Actions", help="Sum total of bookmarks, direct internal messages, and user reposts.")
-        with aq_col3:
-            st.markdown(f"**Top Target Accounts Reached:**\n`{accounts_summary_str}`")
-
-        st.markdown("---")
-        st.subheader("📊 Core Strategic Performance Vectors (All-Time History)")
-
-        ic1, ic2 = st.columns(2)
-        with ic1:
-            st.caption("📈 Total Followers")
-            st.line_chart(profile_metrics.set_index('Date')[['Total followers']], color="#0a66c2")
-            st.caption("🔍 Platform-Wide Profile Appearances")
-            st.line_chart(profile_metrics.set_index('Date')[['Appearances']], color="#ff9900")
-        with ic2:
-            st.caption("🛡️ Social Selling Index (SSI) Tracker")
-            st.line_chart(profile_metrics.set_index('Date')[['SSI']], color="#dc2626")
-            st.caption("👀 Profile Views")
-            st.line_chart(profile_metrics.set_index('Date')[['Profile views']], color="#1db954")
-
-        st.markdown("---")
-        st.subheader("📝 Monthly Content Performance Logs (Historical Vectors)")
-
-        if not individual_posts.empty:
-            monthly_posts_perf = individual_posts.groupby('YearMonth').agg({
-                'Impressions': 'sum',
-                'Engagement': 'sum'
-            }).sort_index()
-
-            monthly_posts_perf.index = monthly_posts_perf.index.astype(str)
-
-            pc1, pc2 = st.columns(2)
-            with pc1:
-                st.caption("📈 Total Organic Post Impressions by Calendar Month")
-                st.bar_chart(monthly_posts_perf['Impressions'], color="#0a66c2")
-            with pc2:
-                st.caption("❤️ Total Post Engagement Interactions by Calendar Month")
-                st.bar_chart(monthly_posts_perf['Engagement'], color="#1db954")
-
-            st.markdown("### 📋 Granular Post Performance Tracking")
-            if not month_posts.empty:
-                display_posts = month_posts.copy()
-                display_posts['DM Reach'] = display_posts['Decision-Maker Reach %'].map(lambda x: f"{x*100:.1f}%")
-                st.dataframe(
-                    display_posts[['Publish Date', 'Topic', 'Impressions', 'Reactions', 'Comments', 'Reposts', 'Saves', 'Sends on LinkedIn', 'DM Reach', 'Top Target Accounts']],
-                    use_container_width=True,
-                    hide_index=True
+            if "compiled_single_pdf" in st.session_state:
+                st.download_button(
+                    label=f"📥 Download {selected_profile}'s Monthly PDF Brief",
+                    data=st.session_state.compiled_single_pdf,
+                    file_name=f"LinkedIn_Brief_{selected_profile.replace(' ', '_')}_{selected_ym.strftime('%Y_%m')}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
                 )
+
+        with ind_col_left:
+            col1, col2, col3, col4, col5 = st.columns(5)
+            col1.metric("Followers (Current)", f"{int(prof_row['Followers']):,}", f"{prof_row['Followers MoM%']:+.1f}% MoM")
+            col2.metric("SSI Score", f"{int(prof_row['SSI'])}/100", f"{prof_row['SSI MoM Shift']:+g} pts MoM")
+            col3.metric("Posts (This Month)", f"{int(prof_row['Posts Published'])}")
+            col4.metric("Profile Views", f"{int(prof_row['Views']):,}")
+            col5.metric("Search Appearances", f"{int(prof_row['Appearances']):,}")
+
+            st.markdown("### 🎯 Audience Quality & Account Intelligence Index")
+            aq_col1, aq_col2, aq_col3 = st.columns(3)
+            aq_col1.metric("Avg. Decision-Maker Reach", f"{avg_dm_reach:.1f}%", help="Percentage of readers carrying Director, VP, CXO, Owner, or Partner corporate hierarchy titles.")
+            aq_col2.metric("High-Intent Shares & Saves", f"{int(total_high_intent)} Actions", help="Sum total of bookmarks, direct internal messages, and user reposts.")
+            with aq_col3:
+                st.markdown(f"**Top Target Accounts Reached:**\n`{accounts_summary_str}`")
+
+            st.markdown("---")
+            st.subheader("📊 Core Strategic Performance Vectors (All-Time History)")
+
+            ic1, ic2 = st.columns(2)
+            with ic1:
+                st.caption("📈 Total Followers")
+                st.line_chart(profile_metrics.set_index('Date')[['Total followers']], color="#0a66c2")
+                st.caption("🔍 Platform-Wide Profile Appearances")
+                st.line_chart(profile_metrics.set_index('Date')[['Appearances']], color="#ff9900")
+            with ic2:
+                st.caption("🛡️ Social Selling Index (SSI) Tracker")
+                st.line_chart(profile_metrics.set_index('Date')[['SSI']], color="#dc2626")
+                st.caption("👀 Profile Views")
+                st.line_chart(profile_metrics.set_index('Date')[['Profile views']], color="#1db954")
+
+            st.markdown("---")
+            st.subheader("📝 Monthly Content Performance Logs (Historical Vectors)")
+
+            if not individual_posts.empty:
+                monthly_posts_perf = individual_posts.groupby('YearMonth').agg({
+                    'Impressions': 'sum',
+                    'Engagement': 'sum'
+                }).sort_index()
+
+                monthly_posts_perf.index = monthly_posts_perf.index.astype(str)
+
+                pc1, pc2 = st.columns(2)
+                with pc1:
+                    st.caption("📈 Total Organic Post Impressions by Calendar Month")
+                    st.bar_chart(monthly_posts_perf['Impressions'], color="#0a66c2")
+                with pc2:
+                    st.caption("❤️ Total Post Engagement Interactions by Calendar Month")
+                    st.bar_chart(monthly_posts_perf['Engagement'], color="#1db954")
+
+                st.markdown("### 📋 Granular Post Performance Tracking")
+                if not month_posts.empty:
+                    display_posts = month_posts.copy()
+                    display_posts['DM Reach'] = display_posts['Decision-Maker Reach %'].map(lambda x: f"{x*100:.1f}%")
+                    st.dataframe(
+                        display_posts[['Publish Date', 'Topic', 'Impressions', 'Reactions', 'Comments', 'Reposts', 'Saves', 'Sends on LinkedIn', 'DM Reach', 'Top Target Accounts']],
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                else:
+                    st.info("No single-post organic analytics have been uploaded for this reporting block yet.")
             else:
-                st.info("No single-post organic analytics have been uploaded for this reporting block yet.")
-        else:
-            st.info("No content marketing metrics or post records exist in Airtable to map historical performance curves.")
+                st.info("No content marketing metrics or post records exist in Airtable to map historical performance curves.")
