@@ -36,20 +36,24 @@ if not AIRTABLE_TOKEN or not BASE_ID:
     st.error("❌ Configuration Missing! Define your `AIRTABLE_TOKEN` and `BASE_ID` inside your secret management dashboard.")
     st.stop()
 
-session = requests.Session()
+# Initialize the standard API client first
+api = Api(AIRTABLE_TOKEN)
+
+# Build the enterprise retry framework
 retries = Retry(
-    total=5,                                    
-    backoff_factor=1,                           
-    status_forcelist=[429, 500, 502, 503, 504], 
+    total=5,                                    # Retry up to 5 times before failing
+    backoff_factor=1,                           # Wait exponentially longer between pings (1s, 2s, 4s...)
+    status_forcelist=[429, 500, 502, 503, 504], # Recover from rate limits (429) or server drops
     raise_on_status=True
 )
-session.mount("https://", HTTPAdapter(max_retries=retries))
 
-api = Api(AIRTABLE_TOKEN, session=session)
+# Inject the rate-limit protector directly into pyairtable's built-in session object
+api.session.mount("https://", HTTPAdapter(max_retries=retries))
+
+# Define your tables using the newly protected API instance
 profiles_table = api.table(BASE_ID, "Profiles")
 metrics_table = api.table(BASE_ID, "Weekly Metrics")
 posts_table = api.table(BASE_ID, "Posts and content")
-
 
 # --- 4. DATA RECONCILIATION & PIPELINE ENGINE ---
 @st.cache_data(ttl=600)  
