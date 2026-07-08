@@ -445,7 +445,7 @@ with tab_individual:
         
         ic1, ic2 = st.columns(2)
         with ic1:
-            st.caption("📈 Audience Reach Growth Curve")
+            st.caption("📈 Follower Growth")
             st.line_chart(profile_metrics.set_index('Date')[['Total followers']], color="#0a66c2")
             
             st.caption("🔍 Weekly Platform-Wide Profile Appearances")
