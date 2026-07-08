@@ -448,9 +448,24 @@ with tab_individual:
         col4.metric("Profile Views", f"{int(prof_row['Views']):,}")
         col5.metric("Search Appearances", f"{int(prof_row['Appearances']):,}")
         
+        # --- RESTORED: INDIVIDUAL HISTORICAL OVERVIEW GRAPHS (2x2 GRID) ---
         st.markdown("---")
-        st.subheader("📈 Long-Term Profile Growth Vector (Audience Base)")
-        st.line_chart(profile_metrics.set_index('Date')[['Total followers']], color="#0a66c2")
+        st.subheader("📊 Core Strategic Performance Vectors (All-Time History)")
+        
+        ic1, ic2 = st.columns(2)
+        with ic1:
+            st.caption("📈 Audience Reach Growth Curve (Total Followers)")
+            st.line_chart(profile_metrics.set_index('Date')[['Total followers']], color="#0a66c2")
+            
+            st.caption("🔍 Search Engine Appearances Volatility Index")
+            st.line_chart(profile_metrics.set_index('Date')[['Appearances']], color="#ff9900")
+            
+        with ic2:
+            st.caption("🛡️ Social Selling Index (SSI) Tracking Vector")
+            st.line_chart(profile_metrics.set_index('Date')[['SSI']], color="#dc2626")
+            
+            st.caption("👀 Inbound Profile Discovery Views")
+            st.line_chart(profile_metrics.set_index('Date')[['Profile views']], color="#1db954")
             
         st.markdown("---")
         st.subheader("📝 Monthly Content Performance Logs (Historical Vectors)")
