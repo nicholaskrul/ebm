@@ -453,17 +453,17 @@ with tab_individual:
         
         ic1, ic2 = st.columns(2)
         with ic1:
-            st.caption("📈 Audience Reach Growth Curve (Total Followers)")
+            st.caption("📈 Total Followers")
             st.line_chart(profile_metrics.set_index('Date')[['Total followers']], color="#0a66c2")
             
-            st.caption("🔍 Search Engine Appearances Volatility Index")
+            st.caption("🔍 Platform-Wide Profile Appearances")
             st.line_chart(profile_metrics.set_index('Date')[['Appearances']], color="#ff9900")
             
         with ic2:
-            st.caption("🛡️ Social Selling Index (SSI) Tracking Vector")
+            st.caption("🛡️ Social Selling Index (SSI) Tracker")
             st.line_chart(profile_metrics.set_index('Date')[['SSI']], color="#dc2626")
             
-            st.caption("👀 Inbound Profile Discovery Views")
+            st.caption("👀 Profile Views")
             st.line_chart(profile_metrics.set_index('Date')[['Profile views']], color="#1db954")
             
         st.markdown("---")
