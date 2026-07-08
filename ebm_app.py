@@ -197,25 +197,47 @@ with st.sidebar.expander("📤 Post Ingestion Center"):
     if uploaded_post_file is not None:
         if st.button("🚀 Push Post to Database", use_container_width=True):
             try:
-                # Read layout flexibly depending on file token structure
+                # Read layout flexibly with dynamic delimiter detection to handle regional CSV layouts
                 if uploaded_post_file.name.endswith('.csv'):
-                    df_upload = pd.read_csv(uploaded_post_file)
+                    try:
+                        df_upload = pd.read_csv(uploaded_post_file)
+                        if len(df_upload.columns) < 2:
+                            uploaded_post_file.seek(0)
+                            df_upload = pd.read_csv(uploaded_post_file, sep=';')
+                    except:
+                        uploaded_post_file.seek(0)
+                        df_upload = pd.read_csv(uploaded_post_file, sep=';')
                 else:
                     df_upload = pd.read_excel(uploaded_post_file)
                 
                 extracted_url = df_upload.columns[1] if len(df_upload.columns) > 1 else "Organic Post Link"
                 
-                # Standardize tracking schema axis names
-                df_upload.columns = ['Label', 'Value', 'Pct'] if len(df_upload.columns) == 3 else ['Label', 'Value'] + (['Pct'] if len(df_upload.columns) == 3 else [])
+                # Safely rename columns to support any layout structure variations without raising indexing errors
+                num_cols = len(df_upload.columns)
+                if num_cols >= 3:
+                    df_upload.columns = ['Label', 'Value', 'Pct'] + [f'Unused_{i}' for i in range(num_cols - 3)]
+                elif num_cols == 2:
+                    df_upload.columns = ['Label', 'Value']
+                    df_upload['Pct'] = "0%"
+                else:
+                    df_upload.columns = ['Label']
+                    df_upload['Value'] = "0"
+                    df_upload['Pct'] = "0%"
+                
                 df_upload['Label'] = df_upload['Label'].astype(str).str.strip()
                 df_upload['Value'] = df_upload['Value'].astype(str).str.strip()
                 
+                # Highly defensive number sanitization to strip commas/spaces and prevent Airtable payload rejections
                 def read_field(label):
                     match_row = df_upload[df_upload['Label'] == label]
                     if not match_row.empty:
-                        val_str = match_row.iloc[0]['Value']
-                        try: return int(float(val_str))
-                        except: return val_str
+                        val_str = str(match_row.iloc[0]['Value']).replace(',', '').replace(' ', '').strip()
+                        try:
+                            return int(float(val_str))
+                        except:
+                            import re
+                            digits = re.sub(r'[^\d]', '', val_str)
+                            return int(digits) if digits else 0
                     return 0
                 
                 raw_date = df_upload[df_upload['Label'] == 'Post Date'].iloc[0]['Value'] if not df_upload[df_upload['Label'] == 'Post Date'].empty else datetime.today().strftime('%Y-%m-%d')
