@@ -39,21 +39,22 @@ if not AIRTABLE_TOKEN or not BASE_ID:
 # Initialize the standard API client first
 api = Api(AIRTABLE_TOKEN)
 
-# Build the enterprise retry framework
+# Build an enterprise retry framework to completely bypass Airtable 5req/sec limits
 retries = Retry(
-    total=5,                                    # Retry up to 5 times before failing
-    backoff_factor=1,                           # Wait exponentially longer between pings (1s, 2s, 4s...)
-    status_forcelist=[429, 500, 502, 503, 504], # Recover from rate limits (429) or server drops
+    total=5,                                    
+    backoff_factor=1,                           
+    status_forcelist=[429, 500, 502, 503, 504], 
     raise_on_status=True
 )
 
 # Inject the rate-limit protector directly into pyairtable's built-in session object
 api.session.mount("https://", HTTPAdapter(max_retries=retries))
 
-# Define your tables using the newly protected API instance
+# Define your tables using the protected API instance
 profiles_table = api.table(BASE_ID, "Profiles")
 metrics_table = api.table(BASE_ID, "Weekly Metrics")
 posts_table = api.table(BASE_ID, "Posts and content")
+
 
 # --- 4. DATA RECONCILIATION & PIPELINE ENGINE ---
 @st.cache_data(ttl=600)  
@@ -65,7 +66,7 @@ def load_all_data():
     id_to_name = {r['id']: r['fields'].get('Full Name', 'Unknown') for r in raw_profiles}
     id_to_title = {r['id']: r['fields'].get('Job Title', 'Executive') for r in raw_profiles}
     
-    # Process Metrics Table
+    # Process Metrics Dataset
     metrics_data = []
     for r in raw_metrics:
         fields = r['fields'].copy()
@@ -83,7 +84,7 @@ def load_all_data():
     else:
         df_m = pd.DataFrame(columns=['Profile Name', 'Job Title', 'Date', 'Total followers', 'SSI', 'Profile views', 'Appearances'])
         
-    # Process Posts Table
+    # Process Content Logs Dataset
     posts_data = []
     for r in raw_posts:
         fields = r['fields'].copy()
@@ -96,8 +97,11 @@ def load_all_data():
         df_p = df_p.dropna(subset=['Publish Date'])
         df_p['Publish Date'] = pd.to_datetime(df_p['Publish Date'])
         df_p['YearMonth'] = df_p['Publish Date'].dt.to_period('M')
+        # Ensure performance columns are numeric and handle missing fields safely
+        df_p['Impressions'] = pd.to_numeric(df_p.get('Impressions', 0)).fillna(0)
+        df_p['Engagement'] = pd.to_numeric(df_p.get('Engagement', 0)).fillna(0)
     else:
-        df_p = pd.DataFrame(columns=['Profile Name', 'Publish Date', 'YearMonth'])
+        df_p = pd.DataFrame(columns=['Profile Name', 'Publish Date', 'YearMonth', 'Impressions', 'Engagement'])
         
     return df_m, df_p
 
@@ -109,12 +113,13 @@ except Exception as e:
     st.error(f"⚠️ Connection Mapping Breakpoint Encountered: {e}")
     st.stop()
 
+# Safely establish timelines while avoiding blanks
 df_metrics['YearMonth'] = df_metrics['Date'].dt.to_period('M')
 available_months = sorted(df_metrics['YearMonth'].dropna().unique(), reverse=True)
 
 st.sidebar.title("Navigation Panel")
 if not available_months:
-    st.sidebar.error("❌ No valid time tracking entries detected in Airtable.")
+    st.sidebar.error("❌ No valid time tracking records were parsed out from Airtable data columns.")
     st.stop()
 
 selected_ym = st.sidebar.selectbox("📅 Reporting Horizon", available_months, format_func=lambda x: x.strftime('%B %Y'))
@@ -144,6 +149,7 @@ for name in all_profiles_list:
     ssi_mom = s_curr - s_base
     ssi_inc = s_curr - s_early
     
+    # Calculate exact posts published during this report month
     month_posts = df_posts[(df_posts['Profile Name'] == name) & (df_posts['YearMonth'] == selected_ym)]
     posts_count = len(month_posts)
     
@@ -164,6 +170,7 @@ for name in all_profiles_list:
 
 df_team_standings = pd.DataFrame(team_records)
 
+# Stabilize inputs across cache clearances
 for name in all_profiles_list:
     if name not in st.session_state.manager_notes:
         st.session_state.manager_notes[name] = ""
@@ -292,11 +299,9 @@ with tab_team:
     t_col3.metric("Total Pool Content Output", f"{df_team_standings['Posts Published'].sum()} Posts")
     t_col4.metric("Combined Active Views (Period)", f"{df_team_standings['Views'].sum():,}")
 
-    # --- NEW: COMBINED TEAM HISTORICAL OVERVIEW GRAPHS ---
     st.markdown("---")
     st.subheader("📊 Combined Team Macro-Trend Vectors (All-Time History)")
     
-    # Compile multi-profile timelines grouped securely by date stamps
     team_trends_df = df_metrics.groupby('Date').agg({
         'Total followers': 'sum',
         'Profile views': 'sum',
@@ -439,16 +444,15 @@ with tab_individual:
         col4.metric("Profile Views", f"{int(prof_row['Views']):,}")
         col5.metric("Search Appearances", f"{int(prof_row['Appearances']):,}")
         
-        # --- NEW: INDIVIDUAL HISTORICAL OVERVIEW GRAPHS ---
         st.markdown("---")
-        st.subheader("📈 Core Strategic Performance Vectors (All-Time Timeline)")
+        st.subheader("📈 Historical Profile Growth Vectors (All-Time History)")
         
         ic1, ic2 = st.columns(2)
         with ic1:
-            st.caption("📈 Follower Growth")
+            st.caption("📈 Audience Reach Growth Curve")
             st.line_chart(profile_metrics.set_index('Date')[['Total followers']], color="#0a66c2")
             
-            st.caption("🔍 Weekly Platform-Wide Profile Appearances")
+            st.caption("🔍 Search Engine Appearances Volatility Index")
             st.line_chart(profile_metrics.set_index('Date')[['Appearances']], color="#ff9900")
             
         with ic2:
@@ -457,3 +461,28 @@ with tab_individual:
             
             st.caption("👀 Inbound Profile Discovery Views")
             st.line_chart(profile_metrics.set_index('Date')[['Profile views']], color="#1db954")
+            
+        # --- NEW: INDIVIDUAL MONTHLY CONTENT PERFORMANCE GRAPHS ---
+        st.markdown("---")
+        st.subheader("📝 Monthly Content Performance Logs (Historical Vectors)")
+        
+        individual_posts = df_posts[df_posts['Profile Name'] == selected_profile].copy()
+        if not individual_posts.empty:
+            # Group by YearMonth and calculate totals
+            monthly_posts_perf = individual_posts.groupby('YearMonth').agg({
+                'Impressions': 'sum',
+                'Engagement': 'sum'
+            }).sort_index()
+            
+            # String convert Period index so Streamlit charts parse cleanly
+            monthly_posts_perf.index = monthly_posts_perf.index.astype(str)
+            
+            pc1, pc2 = st.columns(2)
+            with pc1:
+                st.caption("📈 Total Organic Post Impressions by Calendar Month")
+                st.bar_chart(monthly_posts_perf['Impressions'], color="#0a66c2")
+            with pc2:
+                st.caption("❤️ Total Post Engagement Interactions by Calendar Month")
+                st.bar_chart(monthly_posts_perf['Engagement'], color="#1db954")
+        else:
+            st.info("No content marketing metrics or post records exist in Airtable to map historical performance curves.")
