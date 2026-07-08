@@ -105,13 +105,38 @@ def load_all_data():
         df_p = df_p.dropna(subset=['Publish Date'])
         df_p['Publish Date'] = pd.to_datetime(df_p['Publish Date'])
         df_p['YearMonth'] = df_p['Publish Date'].dt.to_period('M')
-        for metric_col in ['Impressions', 'Engagement']:
+        
+        # Enforce metrics type safety for legacy columns and advanced demographic metrics
+        numeric_cols = [
+            'Impressions', 'Reactions', 'Comments', 'Profile Visitors From Post', 
+            'Members Reached', 'Followers Gained From Post', 'Reposts', 'Saves', 
+            'Sends on LinkedIn', 'Decision-Maker Reach %'
+        ]
+        for metric_col in numeric_cols:
             if metric_col in df_p.columns:
                 df_p[metric_col] = pd.to_numeric(df_p[metric_col]).fillna(0)
             else:
                 df_p[metric_col] = 0
+                
+        # Handle custom formula for blended analytics if 'Engagement' doesn't exist
+        if 'Engagement' not in df_p.columns:
+            df_p['Engagement'] = df_p['Reactions'] + df_p['Comments'] + df_p['Reposts']
+        else:
+            df_p['Engagement'] = pd.to_numeric(df_p['Engagement']).fillna(0)
+            
+        # Ensure text tags columns are initialized cleanly
+        for text_col in ['Top Target Accounts', 'Top Core Industries', 'Topic']:
+            if text_col not in df_p.columns:
+                df_p[text_col] = ""
+            else:
+                df_p[text_col] = df_p[text_col].fillna("")
     else:
-        df_p = pd.DataFrame(columns=['Profile Name', 'Publish Date', 'YearMonth', 'Impressions', 'Engagement'])
+        df_p = pd.DataFrame(columns=[
+            'Profile Name', 'Publish Date', 'YearMonth', 'Impressions', 'Engagement', 
+            'Reactions', 'Comments', 'Profile Visitors From Post', 'Members Reached', 
+            'Followers Gained From Post', 'Reposts', 'Saves', 'Sends on LinkedIn', 
+            'Decision-Maker Reach %', 'Top Target Accounts', 'Top Core Industries', 'Topic'
+        ])
         
     return df_m, df_p
 
@@ -153,7 +178,7 @@ def sync_from_ind(name):
     st.session_state[f"team_notes_{name}"] = val
 
 
-# --- GLOBAL NAVIGATION CONTROL PANEL ---
+# --- GLOBAL NAVIGATION CONTROL PANEL & INGESTION HUB ---
 st.sidebar.title("Navigation Panel")
 if not available_months:
     st.sidebar.error("❌ No valid time tracking records were parsed out from Airtable data columns.")
@@ -161,6 +186,90 @@ if not available_months:
 
 selected_ym = st.sidebar.selectbox("📅 Reporting Horizon", available_months, format_func=lambda x: x.strftime('%B %Y'))
 selected_profile = st.sidebar.selectbox("🎯 Target Professional Focus", all_profiles_list)
+
+# --- ADVANCED POST ANALYTICS DRAG-AND-DROP INGESTION ENGINE ---
+with st.sidebar.expander("📤 Post Ingestion Center"):
+    st.markdown("### Process Single-Post Export")
+    target_upload_profile = st.selectbox("Assign Post Data To:", all_profiles_list, key="upload_exec_select")
+    uploaded_post_file = st.file_uploader("Upload LinkedIn Excel / CSV", type=["xlsx", "csv"])
+    entered_topic = st.text_input("Content Topic / Context", placeholder="e.g., Q3 Keynote Address")
+    
+    if uploaded_post_file is not None:
+        if st.button("🚀 Push Post to Database", use_container_width=True):
+            try:
+                # Read layout flexibly depending on file token structure
+                if uploaded_post_file.name.endswith('.csv'):
+                    df_upload = pd.read_csv(uploaded_post_file)
+                else:
+                    df_upload = pd.read_excel(uploaded_post_file)
+                
+                extracted_url = df_upload.columns[1] if len(df_upload.columns) > 1 else "Organic Post Link"
+                
+                # Standardize tracking schema axis names
+                df_upload.columns = ['Label', 'Value', 'Pct'] if len(df_upload.columns) == 3 else ['Label', 'Value'] + (['Pct'] if len(df_upload.columns) == 3 else [])
+                df_upload['Label'] = df_upload['Label'].astype(str).str.strip()
+                df_upload['Value'] = df_upload['Value'].astype(str).str.strip()
+                
+                def read_field(label):
+                    match_row = df_upload[df_upload['Label'] == label]
+                    if not match_row.empty:
+                        val_str = match_row.iloc[0]['Value']
+                        try: return int(float(val_str))
+                        except: return val_str
+                    return 0
+                
+                raw_date = df_upload[df_upload['Label'] == 'Post Date'].iloc[0]['Value'] if not df_upload[df_upload['Label'] == 'Post Date'].empty else datetime.today().strftime('%Y-%m-%d')
+                try: clean_date = pd.to_datetime(raw_date).strftime('%Y-%m-%d')
+                except: clean_date = datetime.today().strftime('%Y-%m-%d')
+                
+                # Calculate aggregated executive statistics
+                companies, industries = [], []
+                computed_dm_reach = 0.0
+                decision_tiers = ['Director', 'VP', 'CXO', 'Owner', 'Partner']
+                
+                if 'Pct' in df_upload.columns:
+                    df_upload['Pct'] = df_upload['Pct'].astype(str).str.strip()
+                    for _, r in df_upload.iterrows():
+                        c_label, c_val, c_pct = str(r['Label']), str(r['Value']), str(r['Pct'])
+                        if c_label == 'Company': companies.append(c_val)
+                        elif c_label == 'Industry': industries.append(c_val)
+                        elif c_label == 'Seniority' and c_val in decision_tiers:
+                            try: computed_dm_reach += float(c_pct.replace('%', ''))
+                            except: pass
+                
+                # Map selected text structure back onto Airtable Record Primary ID
+                all_raw_profiles = profiles_table.all()
+                profile_record_id = None
+                for p_rec in all_raw_profiles:
+                    if p_rec['fields'].get('Full Name') == target_upload_profile:
+                        profile_record_id = p_rec['id']
+                        break
+                
+                payload = {
+                    "Profile": [profile_record_id] if profile_record_id else [],
+                    "Publish Date": clean_date,
+                    "Topic": entered_topic if entered_topic else "LinkedIn Organic Content",
+                    "Post URL": extracted_url,
+                    "Impressions": read_field('Impressions'),
+                    "Reactions": read_field('Reactions'),
+                    "Comments": read_field('Comments'),
+                    "Profile Visitors From Post": read_field('Profile viewers from this post'),
+                    "Members Reached": read_field('Members reached'),
+                    "Followers Gained From Post": read_field('Followers gained from this post'),
+                    "Reposts": read_field('Reposts'),
+                    "Saves": read_field('Saves'),
+                    "Sends on LinkedIn": read_field('Sends on LinkedIn'),
+                    "Decision-Maker Reach %": computed_dm_reach / 100.0,
+                    "Top Target Accounts": ", ".join(companies[:3]),
+                    "Top Core Industries": ", ".join(industries[:3])
+                }
+                
+                posts_table.create(payload)
+                st.sidebar.success("🎉 Ingestion complete! Refreshing...")
+                st.cache_data.clear()
+                st.rerun()
+            except Exception as parse_ex:
+                st.sidebar.error(f"Ingestion break: {parse_ex}")
 
 
 # --- 5. GRAPH ENGINE BASE64 EXPORT UTILITY ---
@@ -201,18 +310,9 @@ for name in all_profiles_list:
     # Empty History Profile Guardrail
     if prof_df.empty:
         team_records.append({
-            'Profile Name': name,
-            'Job Title': 'Executive',
-            'Followers': 0,
-            'Followers MoM%': 0.0,
-            'Followers Inc Growth': 0,
-            'SSI': 0,
-            'SSI MoM Shift': 0,
-            'SSI Inc Shift': 0,
-            'Views': 0,
-            'Appearances': 0,
-            'Posts Published': 0,
-            'Date': datetime.today()
+            'Profile Name': name, 'Job Title': 'Executive', 'Followers': 0, 'Followers MoM%': 0.0,
+            'Followers Inc Growth': 0, 'SSI': 0, 'SSI MoM Shift': 0, 'SSI Inc Shift': 0,
+            'Views': 0, 'Appearances': 0, 'Posts Published': 0, 'Date': datetime.today()
         })
         continue
     
@@ -392,7 +492,7 @@ with tab_team:
         b64_fol = export_plot_to_b64(trends_df, 'Total followers', 'line', '#0a66c2')
         b64_views = export_plot_to_b64(trends_df, 'Profile views', 'line', '#1db954')
         b64_app = export_plot_to_b64(trends_df, 'Appearances', 'line', '#ff9900')
-        b64_ssi = export_plot_to_b64(trends_df, 'SSI', 'line', '#dc2626')  # Corrected valid hex color string
+        b64_ssi = export_plot_to_b64(trends_df, 'SSI', 'line', '#dc2626')
         
         final_html = html_template.replace("__ROWS__", rows_html)\
                                   .replace("__HORIZON__", selected_ym.strftime('%B %Y'))\
@@ -470,6 +570,22 @@ with tab_individual:
     profile_metrics = df_metrics[df_metrics['Profile Name'] == selected_profile].sort_values('Date')
     current_month_data = profile_metrics[profile_metrics['YearMonth'] == selected_ym]
 
+    # Segment content vectors for the designated professional horizon
+    individual_posts = df_posts[df_posts['Profile Name'] == selected_profile].copy()
+    month_posts = individual_posts[individual_posts['YearMonth'] == selected_ym] if not individual_posts.empty else pd.DataFrame()
+    
+    # Pre-calculate demographic KPIs for dashboard elements and tokens
+    avg_dm_reach = month_posts['Decision-Maker Reach %'].mean() * 100 if not month_posts.empty and 'Decision-Maker Reach %' in month_posts.columns else 0.0
+    total_saves = month_posts['Saves'].sum() if not month_posts.empty and 'Saves' in month_posts.columns else 0
+    total_sends = month_posts['Sends on LinkedIn'].sum() if not month_posts.empty and 'Sends on LinkedIn' in month_posts.columns else 0
+    total_reposts = month_posts['Reposts'].sum() if not month_posts.empty and 'Reposts' in month_posts.columns else 0
+    
+    accounts_seen = [str(x) for x in month_posts['Top Target Accounts'].dropna().unique() if str(x) != ""]
+    accounts_summary_str = ", ".join(accounts_seen)[:100] if accounts_seen else "No corporate target tracking entries logged."
+    
+    industries_seen = [str(x) for x in month_posts['Top Core Industries'].dropna().unique() if str(x) != ""]
+    industries_summary_str = ", ".join(industries_seen)[:100] if industries_seen else "No industrial tracking profiles mapped."
+
     st.subheader(f"📈 Strategic Progress Breakdown: {selected_profile}")
     st.markdown("---")
 
@@ -521,6 +637,14 @@ with tab_individual:
                     • Posts Published This Month: <strong>__POSTS__ Posts</strong><br>
                     • Profile Discovery Views: <strong>__VIEWS__</strong><br>
                     • Search Appearances Indexes: <strong>__APP__</strong>
+                </div>
+                
+                <div class='card' style='border-top-color: #7c3aed;'>
+                    <strong>Audience Quality & Account Intelligence Index</strong><br>
+                    • Average Decision-Maker Reach Tier: <strong>__DM_REACH__%</strong><br>
+                    • Key Target Accounts Engaged: <em>__TARGET_ACCOUNTS__</em><br>
+                    • Primary Industry Heatmaps: <em>__TARGET_INDUSTRIES__</em><br>
+                    • Content High-Intent Signals: <strong>__SAVED_SHARED__ Actions (Saves/Sends/Reposts)</strong>
                 </div>
                 
                 <h2>Manager Commentary & Tactical Alignment</h2>
@@ -618,6 +742,10 @@ with tab_individual:
                                   .replace('__POSTS__', f"{int(prof_row['Posts Published'])}")\
                                   .replace('__VIEWS__', f"{int(prof_row['Views']):,}")\
                                   .replace('__APP__', f"{int(prof_row['Appearances']):,}")\
+                                  .replace('__DM_REACH__', f"{avg_dm_reach:.1f}")\
+                                  .replace('__TARGET_ACCOUNTS__', accounts_summary_str)\
+                                  .replace('__TARGET_INDUSTRIES__', industries_summary_str)\
+                                  .replace('__SAVED_SHARED__', f"{int(total_saves + total_sends + total_reposts)}")\
                                   .replace('__COMMENTARY__', comment_html)\
                                   .replace('__CHART_FOL__', b64_ind_fol)\
                                   .replace('__CHART_SSI__', b64_ind_ssi)\
@@ -630,7 +758,6 @@ with tab_individual:
             return buf.getvalue()
 
         try:
-            individual_posts = df_posts[df_posts['Profile Name'] == selected_profile].copy()
             single_pdf_bytes = generate_single_progress_pdf(profile_metrics, individual_posts)
             st.download_button(
                 label=f"📥 Download {selected_profile}'s Monthly PDF Brief",
@@ -650,6 +777,14 @@ with tab_individual:
         col4.metric("Profile Views", f"{int(prof_row['Views']):,}")
         col5.metric("Search Appearances", f"{int(prof_row['Appearances']):,}")
         
+        # --- NEW SECTION: B2B ACCOUNT QUALITY EXECUTIVE GAUGES ---
+        st.markdown("### 🎯 Audience Quality & Account Intelligence Index")
+        aq_col1, aq_col2, aq_col3 = st.columns(3)
+        aq_col1.metric("Avg. Decision-Maker Reach", f"{avg_dm_reach:.1f}%", help="Percentage of readers carrying Director, VP, CXO, Owner, or Partner corporate hierarchy titles.")
+        aq_col2.metric("High-Intent Shares & Saves", f"{int(total_saves + total_sends + total_reposts)} Actions", help="Sum total of bookmarks, direct internal messages, and user reposts.")
+        with aq_col3:
+            st.markdown(f"**Top Target Accounts Reached:**\n`{accounts_summary_str}`")
+
         st.markdown("---")
         st.subheader("📊 Core Strategic Performance Vectors (All-Time History)")
         
@@ -668,7 +803,6 @@ with tab_individual:
         st.markdown("---")
         st.subheader("📝 Monthly Content Performance Logs (Historical Vectors)")
         
-        individual_posts = df_posts[df_posts['Profile Name'] == selected_profile].copy()
         if not individual_posts.empty:
             monthly_posts_perf = individual_posts.groupby('YearMonth').agg({
                 'Impressions': 'sum',
@@ -684,5 +818,18 @@ with tab_individual:
             with pc2:
                 st.caption("❤️ Total Post Engagement Interactions by Calendar Month")
                 st.bar_chart(monthly_posts_perf['Engagement'], color="#1db954")
+                
+            # Render a granular post data breakdown for the executive
+            st.markdown("### 📋 Granular Post Performance Tracking")
+            if not month_posts.empty:
+                display_posts = month_posts.copy()
+                display_posts['DM Reach'] = display_posts['Decision-Maker Reach %'].map(lambda x: f"{x*100:.1f}%")
+                st.dataframe(
+                    display_posts[['Publish Date', 'Topic', 'Impressions', 'Reactions', 'Comments', 'Reposts', 'Saves', 'Sends on LinkedIn', 'DM Reach', 'Top Target Accounts']],
+                    use_container_width=True,
+                    hide_index=True
+                )
+            else:
+                st.info("No single-post organic analytics have been uploaded for this reporting block yet.")
         else:
             st.info("No content marketing metrics or post records exist in Airtable to map historical performance curves.")
