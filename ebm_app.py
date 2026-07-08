@@ -485,7 +485,7 @@ def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, se
         </div>
         <div class='card'>
             <div class='val'>__FOL_CURR__</div>
-            <strong>Total Audience Reach</strong><br>
+            <strong>Total Followers</strong><br>
             • Monthly Delta: <span class='__FOL_MOM_CLS__'>__FOL_MOM__</span><br>
             • Cumulative Growth (Since Inception): <span class='pos'>+__FOL_INC__ Followers</span>
         </div>
@@ -586,7 +586,6 @@ def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, se
         </table>
         """
 
-    # NEW: Dynamically build out the single-post granular report page inside the document layout
     ind_posts_section_html = ""
     if b64_reach_pct and b64_members_reached and b64_eng_rate:
         ind_posts_section_html = f"""
@@ -776,7 +775,7 @@ with tab_team:
 
     st.markdown("---")
     st.markdown("### 📋 Detailed Cross-Profile Leaderboard")
-    display_team_df = display_team_df = df_team_standings.copy()
+    display_team_df = df_team_standings.copy()
     display_team_df['Manager Remarks'] = display_team_df['Profile Name'].map(lambda x: st.session_state.manager_notes.get(x, ""))
     st.dataframe(
         display_team_df.set_index('Profile Name')[
@@ -814,7 +813,6 @@ with tab_individual:
         industries_seen = [str(x) for x in month_posts['Top Core Industries'].dropna().unique() if str(x) != ""] if 'Top Core Industries' in month_posts.columns else []
         industries_summary_str = ", ".join(industries_seen)[:100] if industries_seen else "No industrial tracking profiles mapped."
 
-        # NEW: Compute math layers per post inside this horizon for the PDF asset compiler
         b64_reach_pct, b64_members_reached, b64_eng_rate = "", "", ""
         if not month_posts.empty:
             pdf_plot_df = month_posts.copy().sort_values('Publish Date')
@@ -854,7 +852,7 @@ with tab_individual:
                         prof_row['SSI'], prof_row['SSI MoM Shift'], prof_row['SSI Inc Shift'],
                         prof_row['Posts Published'], prof_row['Views'], prof_row['Appearances'],
                         avg_dm_reach, accounts_summary_str, industries_summary_str, total_high_intent,
-                        b64_reach_pct, b64_members_reached, b64_eng_rate # Injected new visual strings
+                        b64_reach_pct, b64_members_reached, b64_eng_rate
                     )
                     st.session_state[f"compiled_single_pdf_{selected_profile}"] = single_pdf_bytes
                     st.success("✨ Dossier completed successfully!")
@@ -921,7 +919,6 @@ with tab_individual:
                     st.caption("❤️ Total Post Engagement Interactions by Calendar Month")
                     st.bar_chart(monthly_posts_perf['Engagement'], color="#1db954")
 
-                # NEW: Interactive Single-Post Analytics UI Section
                 st.markdown("### 📊 Single-Post Performance Breakdown (Current Month)")
                 if not month_posts.empty:
                     p_ch1, p_ch2, p_ch3 = st.columns(3)
