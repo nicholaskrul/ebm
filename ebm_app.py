@@ -448,7 +448,7 @@ with tab_individual:
             st.caption("📈 Audience Reach Growth Curve")
             st.line_chart(profile_metrics.set_index('Date')[['Total followers']], color="#0a66c2")
             
-            st.caption("🔍 Search Engine Appearances Volatility Index")
+            st.caption("🔍 Weekly Platform-Wide Profile Appearances")
             st.line_chart(profile_metrics.set_index('Date')[['Appearances']], color="#ff9900")
             
         with ic2:
