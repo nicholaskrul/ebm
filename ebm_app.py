@@ -97,7 +97,6 @@ def load_all_data():
         df_p = df_p.dropna(subset=['Publish Date'])
         df_p['Publish Date'] = pd.to_datetime(df_p['Publish Date'])
         df_p['YearMonth'] = df_p['Publish Date'].dt.to_period('M')
-        # Ensure performance columns are numeric and handle missing fields safely
         for metric_col in ['Impressions', 'Engagement']:
             if metric_col in df_p.columns:
                 df_p[metric_col] = pd.to_numeric(df_p[metric_col]).fillna(0)
@@ -119,18 +118,21 @@ except Exception as e:
 # Safely establish timelines while avoiding blanks
 df_metrics['YearMonth'] = df_metrics['Date'].dt.to_period('M')
 available_months = sorted(df_metrics['YearMonth'].dropna().unique(), reverse=True)
+all_profiles_list = sorted(df_metrics['Profile Name'].unique())
 
+# --- GLOBAL NAVIGATION CONTROL PANEL ---
 st.sidebar.title("Navigation Panel")
 if not available_months:
     st.sidebar.error("❌ No valid time tracking records were parsed out from Airtable data columns.")
     st.stop()
 
 selected_ym = st.sidebar.selectbox("📅 Reporting Horizon", available_months, format_func=lambda x: x.strftime('%B %Y'))
+# FIX: Moved from tab body to global sidebar to permanently eliminate tab-ghosting layout bugs
+selected_profile = st.sidebar.selectbox("🎯 Target Professional Focus", all_profiles_list)
+
 
 # --- 5. COMPREHENSIVE TEAM METRICS METRIC CALCULATOR ---
-all_profiles_list = sorted(df_metrics['Profile Name'].unique())
 team_records = []
-
 for name in all_profiles_list:
     prof_df = df_metrics[df_metrics['Profile Name'] == name].sort_values('Date')
     if prof_df.empty: continue
@@ -152,7 +154,6 @@ for name in all_profiles_list:
     ssi_mom = s_curr - s_base
     ssi_inc = s_curr - s_early
     
-    # Calculate exact posts published during this report month
     month_posts = df_posts[(df_posts['Profile Name'] == name) & (df_posts['YearMonth'] == selected_ym)]
     posts_count = len(month_posts)
     
@@ -344,8 +345,7 @@ with tab_team:
 # 🎯 TAB 2: INDIVIDUAL PROFILE DEEP DIVE
 # ==========================================
 with tab_individual:
-    selected_profile = st.selectbox("🎯 Target Professional Profiles Focus", all_profiles_list)
-    
+    # Safely extract records matching global sidebar state variables
     prof_row = df_team_standings[df_team_standings['Profile Name'] == selected_profile].iloc[0]
     profile_metrics = df_metrics[df_metrics['Profile Name'] == selected_profile].sort_values('Date')
     current_month_data = profile_metrics[profile_metrics['YearMonth'] == selected_ym]
@@ -448,7 +448,6 @@ with tab_individual:
         col4.metric("Profile Views", f"{int(prof_row['Views']):,}")
         col5.metric("Search Appearances", f"{int(prof_row['Appearances']):,}")
         
-        # --- RESTORED: INDIVIDUAL HISTORICAL OVERVIEW GRAPHS (2x2 GRID) ---
         st.markdown("---")
         st.subheader("📊 Core Strategic Performance Vectors (All-Time History)")
         
