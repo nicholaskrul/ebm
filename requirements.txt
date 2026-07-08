@@ -1,4 +1,6 @@
-streamlit
-pandas
-pyairtable
-weasyprint
+pyairtable>=2.0.0
+requests>=2.31.0
+urllib3>=2.0.0
+matplotlib>=3.8.0
+weasyprint>=61.0
+pandas>=2.0.0
