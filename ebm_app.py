@@ -6,12 +6,10 @@ import io
 import requests
 from urllib3.util import Retry
 from requests.adapters import HTTPAdapter
-import matplotlib.pyplot as plt
+# Switched from global pyplot to pure object-oriented thread-safe Figure elements
+from matplotlib.figure import Figure
 import base64
 from weasyprint import HTML
-
-# Force matplotlib to operate in a headless state to prevent thread crashing in web environments
-plt.switch_backend('Agg')
 
 # --- 1. APPLICATION CONFIGURATION & VISUAL STYLING ---
 st.set_page_config(
@@ -83,7 +81,6 @@ def load_all_data():
         ssi_col = [col for col in df_m.columns if col.startswith('SSI')][0] if [col for col in df_m.columns if col.startswith('SSI')] else 'SSI'
         df_m = df_m.rename(columns={ssi_col: 'SSI'})
         
-        # Defensive Type Coercion to prevent mathematical calculation failures
         for metric_col in ['Total followers', 'SSI', 'Profile views', 'Appearances']:
             if metric_col in df_m.columns:
                 df_m[metric_col] = pd.to_numeric(df_m[metric_col]).fillna(0)
@@ -106,7 +103,6 @@ def load_all_data():
         df_p['Publish Date'] = pd.to_datetime(df_p['Publish Date'])
         df_p['YearMonth'] = df_p['Publish Date'].dt.to_period('M')
         
-        # Enforce metrics type safety for legacy columns and advanced demographic metrics
         numeric_cols = [
             'Impressions', 'Reactions', 'Comments', 'Profile Visitors From Post', 
             'Members Reached', 'Followers Gained From Post', 'Reposts', 'Saves', 
@@ -118,13 +114,11 @@ def load_all_data():
             else:
                 df_p[metric_col] = 0
                 
-        # Handle custom formula for blended analytics if 'Engagement' doesn't exist
         if 'Engagement' not in df_p.columns:
             df_p['Engagement'] = df_p['Reactions'] + df_p['Comments'] + df_p['Reposts']
         else:
             df_p['Engagement'] = pd.to_numeric(df_p['Engagement']).fillna(0)
             
-        # Ensure text tags columns are initialized cleanly
         for text_col in ['Top Target Accounts', 'Top Core Industries', 'Topic']:
             if text_col not in df_p.columns:
                 df_p[text_col] = ""
@@ -141,8 +135,8 @@ def load_all_data():
     return df_m, df_p
 
 
-# Add dynamic loading visibility to the initial data handshake
-with st.spinner("⚡ Connecting to Airtable and fetching fresh portfolio metrics..."):
+# Wrap global execution loops inside explicit status spinners
+with st.spinner("⚡ Fetching portfolio records from Airtable..."):
     try:
         df_metrics, df_posts = load_all_data()
         st.sidebar.success("⚡ Live Database Sync Active")
@@ -150,7 +144,6 @@ with st.spinner("⚡ Connecting to Airtable and fetching fresh portfolio metrics
         st.error(f"❌ Connection Mapping Breakpoint Encountered: {e}")
         st.stop()
 
-# Safely establish timelines while avoiding blanks
 df_metrics['YearMonth'] = df_metrics['Date'].dt.to_period('M')
 available_months = sorted(df_metrics['YearMonth'].dropna().unique(), reverse=True)
 all_profiles_list = sorted(df_metrics['Profile Name'].unique())
@@ -159,7 +152,6 @@ all_profiles_list = sorted(df_metrics['Profile Name'].unique())
 if "manager_notes" not in st.session_state:
     st.session_state.manager_notes = {}
 
-# Instantiate memory profiles and balance state containers
 for name in all_profiles_list:
     if name not in st.session_state.manager_notes:
         st.session_state.manager_notes[name] = ""
@@ -168,7 +160,6 @@ for name in all_profiles_list:
     if f"ind_notes_{name}" not in st.session_state:
         st.session_state[f"ind_notes_{name}"] = st.session_state.manager_notes[name]
 
-# State synchronization callback functions
 def sync_from_team(name):
     val = st.session_state[f"team_notes_{name}"]
     st.session_state.manager_notes[name] = val
@@ -200,11 +191,9 @@ with st.sidebar.expander("📤 Post Ingestion Center"):
         if st.button("🚀 Push Post to Database", use_container_width=True):
             try:
                 df_upload = None
-                
                 if uploaded_post_file.name.endswith('.csv'):
                     encodings_to_try = ['utf-8', 'utf-16', 'utf-16-le', 'latin1']
                     separators_to_try = [',', '\t', ';']
-                    
                     for encoding in encodings_to_try:
                         for sep in separators_to_try:
                             try:
@@ -213,11 +202,8 @@ with st.sidebar.expander("📤 Post Ingestion Center"):
                                 if len(df_test.columns) >= 2 and len(df_test) > 5:
                                     df_upload = df_test
                                     break
-                            except:
-                                continue
-                        if df_upload is not None:
-                            break
-                            
+                            except: continue
+                        if df_upload is not None: break
                     if df_upload is None:
                         uploaded_post_file.seek(0)
                         df_upload = pd.read_csv(uploaded_post_file)
@@ -225,7 +211,6 @@ with st.sidebar.expander("📤 Post Ingestion Center"):
                     df_upload = pd.read_excel(uploaded_post_file)
                 
                 extracted_url = df_upload.columns[1] if len(df_upload.columns) > 1 else "Organic Post Link"
-                
                 num_cols = len(df_upload.columns)
                 if num_cols >= 3:
                     df_upload.columns = ['Label', 'Value', 'Pct'] + [f'Unused_{i}' for i in range(num_cols - 3)]
@@ -244,8 +229,7 @@ with st.sidebar.expander("📤 Post Ingestion Center"):
                     match_row = df_upload[df_upload['Label'] == label]
                     if not match_row.empty:
                         val_str = str(match_row.iloc[0]['Value']).replace(',', '').replace(' ', '').strip()
-                        try:
-                            return int(float(val_str))
+                        try: return int(float(val_str))
                         except:
                             import re
                             digits = re.sub(r'[^\d]', '', val_str)
@@ -307,16 +291,16 @@ with st.sidebar.expander("📤 Post Ingestion Center"):
                 st.sidebar.error(f"Ingestion break: {error_details}")
 
 
-# --- 5. GRAPH ENGINE BASE64 EXPORT UTILITY ---
+# --- 5. GRAPH ENGINE BASE64 EXPORT UTILITY (Thread-Isolated Figures) ---
 def export_plot_to_b64(df_source, column_name, chart_type='line', color='#0a66c2'):
-    """Generates a highly-stylized graphic element back into a flat HTML image token."""
     if df_source.empty or column_name not in df_source.columns:
         return ""
     
-    fig, ax = plt.subplots(figsize=(5.5, 2.8), facecolor='#ffffff')
+    # Switched to unlinked object figures to guarantee concurrent thread stability
+    fig = Figure(figsize=(5.5, 2.8), facecolor='#ffffff')
+    ax = fig.subplots()
     ax.set_facecolor('#ffffff')
     
-    # Format axes parameters
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     ax.spines['left'].set_color('#cbd5e1')
@@ -329,16 +313,13 @@ def export_plot_to_b64(df_source, column_name, chart_type='line', color='#0a66c2
     elif chart_type == 'bar':
         ax.bar(df_source.index, df_source[column_name], color=color, alpha=0.85, width=0.6)
         
-    plt.tight_layout()
     img_buf = io.BytesIO()
     fig.savefig(img_buf, format='png', bbox_inches='tight', dpi=150)
-    plt.close(fig)
     img_buf.seek(0)
     return f"data:image/png;base64,{base64.b64encode(img_buf.read()).decode('utf-8')}"
 
 
-# --- 6. CACHED PDF REPORT COMPILERS (Removes Execution Latency) ---
-@st.cache_data(show_spinner="🖨️ Compiling Portfolio PDF Summary Brief...")
+# --- 6. CACHED PDF REPORT COMPILERS ---
 def generate_team_progress_pdf(df_source, trends_df, manager_notes, horizon_str):
     html_template = """
     <!DOCTYPE html><html><head><meta charset='utf-8'><style>
@@ -423,7 +404,6 @@ def generate_team_progress_pdf(df_source, trends_df, manager_notes, horizon_str)
         p_name = row['Profile Name']
         txt_note = manager_notes.get(p_name, "").strip()
         note_html = f"<div class='note-box'>{txt_note}</div>" if txt_note else "<em style='color:#94a3b8;'>No performance remarks provided.</em>"
-        
         f_mom_cls = "pos" if row['Followers MoM%'] >= 0 else "neg"
         s_mom_cls = "pos" if row['SSI MoM Shift'] >= 0 else "neg"
         s_inc_cls = "pos" if row['SSI Inc Shift'] >= 0 else "neg"
@@ -470,7 +450,6 @@ def generate_team_progress_pdf(df_source, trends_df, manager_notes, horizon_str)
     return buf.getvalue()
 
 
-@st.cache_data(show_spinner="🖨️ Compiling Individual Executive PDF Dossier...")
 def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, selected_profile, horizon_str, f_curr, f_mom, f_inc, s_curr, s_mom, s_inc, posts_count, views_count, app_count, avg_dm_reach, accounts_str, industries_str, total_high_intent):
     html_template = """
     <!DOCTYPE html><html><head><meta charset='utf-8'><style>
@@ -559,7 +538,6 @@ def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, se
     </body></html>
     """
     comment_html = manager_notes_str.replace("\n", "<br>") if manager_notes_str else "<em>No remarks logged.</em>"
-    
     b64_ind_fol = export_plot_to_b64(hist_metrics.set_index('Date'), 'Total followers', 'line', '#0a66c2')
     b64_ind_ssi = export_plot_to_b64(hist_metrics.set_index('Date'), 'SSI', 'line', '#dc2626')
     b64_ind_app = export_plot_to_b64(hist_metrics.set_index('Date'), 'Appearances', 'line', '#ff9900')
@@ -569,7 +547,6 @@ def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, se
     if not content_df.empty:
         monthly_posts_perf = content_df.groupby('YearMonth').agg({'Impressions': 'sum', 'Engagement': 'sum'}).sort_index()
         monthly_posts_perf.index = monthly_posts_perf.index.astype(str)
-        
         b64_post_imp = export_plot_to_b64(monthly_posts_perf, 'Impressions', 'bar', '#0a66c2')
         b64_post_eng = export_plot_to_b64(monthly_posts_perf, 'Engagement', 'bar', '#1db954')
         
@@ -598,6 +575,7 @@ def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, se
                           .replace('__TITLE__', 'Executive')\
                           .replace('__MONTH__', horizon_str)\
                           .replace('__FOL_CURR__', f"{int(f_curr):,}")\
+                          .replace('__MONTH__', horizon_str)\
                           .replace('__FOL_MOM__', f"{f_mom:+.1f}% MoM")\
                           .replace('__FOL_MOM_CLS__', 'pos' if f_mom >= 0 else 'neg')\
                           .replace('__FOL_INC__', f"{int(f_inc):,}")\
@@ -652,23 +630,25 @@ with tab_team:
         'SSI': 'mean'
     }).sort_index()
 
-    try:
-        # Pass dependencies strictly to skip repetitive loops
-        team_report_bytes = generate_team_progress_pdf(
-            df_team_standings, 
-            team_trends_df, 
-            st.session_state.manager_notes, 
-            selected_ym.strftime('%B %Y')
-        )
+    # Split document rendering behind explicit layout toggles to prevent runtime freezing
+    if st.button("🛠️ Compile Portfolio PDF Report"):
+        try:
+            team_report_bytes = generate_team_progress_pdf(
+                df_team_standings, team_trends_df, st.session_state.manager_notes, selected_ym.strftime('%B %Y')
+            )
+            st.session_state.compiled_team_pdf = team_report_bytes
+            st.success("✨ Report compilation complete!")
+        except Exception as pdf_err:
+            st.error(f"PDF Compiler Error: {pdf_err}")
+            
+    if "compiled_team_pdf" in st.session_state:
         st.download_button(
-            label="📥 Export Executive Portfolio Progress PDF",
-            data=team_report_bytes,
+            label="📥 Download Executive Portfolio Progress PDF",
+            data=st.session_state.compiled_team_pdf,
             file_name=f"Executive_Portfolio_Progress_{selected_ym.strftime('%Y_%m')}.pdf",
             mime="application/pdf",
             use_container_width=True
         )
-    except Exception as pdf_err:
-        st.error(f"PDF Compiler Error: {pdf_err}")
 
     st.markdown("---")
     t_col1, t_col2, t_col3, t_col4 = st.columns(4)
@@ -740,26 +720,30 @@ with tab_individual:
             args=(selected_profile,)
         )
         
-        try:
-            # Shift individual PDF arrays to use lazy caching configuration
-            single_pdf_bytes = generate_single_progress_pdf(
-                profile_metrics, individual_posts, 
-                st.session_state.manager_notes.get(selected_profile, ""),
-                selected_profile, selected_ym.strftime('%B %Y'),
-                prof_row['Followers'], prof_row['Followers MoM%'], prof_row['Followers Inc Growth'],
-                prof_row['SSI'], prof_row['SSI MoM Shift'], prof_row['SSI Inc Shift'],
-                prof_row['Posts Published'], prof_row['Views'], prof_row['Appearances'],
-                avg_dm_reach, accounts_summary_str, industries_summary_str, total_high_intent
-            )
+        if st.button(f"🛠️ Prepare {selected_profile}'s Monthly Brief"):
+            try:
+                single_pdf_bytes = generate_single_progress_pdf(
+                    profile_metrics, individual_posts, 
+                    st.session_state.manager_notes.get(selected_profile, ""),
+                    selected_profile, selected_ym.strftime('%B %Y'),
+                    prof_row['Followers'], prof_row['Followers MoM%'], prof_row['Followers Inc Growth'],
+                    prof_row['SSI'], prof_row['SSI MoM Shift'], prof_row['SSI Inc Shift'],
+                    prof_row['Posts Published'], prof_row['Views'], prof_row['Appearances'],
+                    avg_dm_reach, accounts_summary_str, industries_summary_str, total_high_intent
+                )
+                st.session_state.compiled_single_pdf = single_pdf_bytes
+                st.success("✨ Dossier completed successfully!")
+            except Exception as e:
+                st.error(f"Single Report Compile Error: {e}")
+                
+        if "compiled_single_pdf" in st.session_state:
             st.download_button(
                 label=f"📥 Download {selected_profile}'s Monthly PDF Brief",
-                data=single_pdf_bytes,
+                data=st.session_state.compiled_single_pdf,
                 file_name=f"LinkedIn_Brief_{selected_profile.replace(' ', '_')}_{selected_ym.strftime('%Y_%m')}.pdf",
                 mime="application/pdf",
                 use_container_width=True
             )
-        except Exception as e:
-            st.error(f"Single Report Compile Error: {e}")
 
     with ind_col_left:
         col1, col2, col3, col4, col5 = st.columns(5)
@@ -771,7 +755,7 @@ with tab_individual:
         
         st.markdown("### 🎯 Audience Quality & Account Intelligence Index")
         aq_col1, aq_col2, aq_col3 = st.columns(3)
-        aq_col1.metric("Avg. Decision-Maker Reach", f"{avg_dm_reach:.1f}%", help="Percentage of readers carrying Director, VP, CXO, Owner, or Partner hierarchy titles.")
+        aq_col1.metric("Avg. Decision-Maker Reach", f"{avg_dm_reach:.1f}%", help="Percentage of readers carrying Director, VP, CXO, Owner, or Partner corporate hierarchy titles.")
         aq_col2.metric("High-Intent Shares & Saves", f"{int(total_high_intent)} Actions", help="Sum total of bookmarks, direct internal messages, and user reposts.")
         with aq_col3:
             st.markdown(f"**Top Target Accounts Reached:**\n`{accounts_summary_str}`")
