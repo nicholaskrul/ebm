@@ -97,8 +97,7 @@ def load_all_data():
         df_p = df_p.dropna(subset=['Publish Date'])
         df_p['Publish Date'] = pd.to_datetime(df_p['Publish Date'])
         df_p['YearMonth'] = df_p['Publish Date'].dt.to_period('M')
-        
-        # FIX: Safe column parsing to ensure missing fields do not throw 'int' attribute errors
+        # Ensure performance columns are numeric and handle missing fields safely
         for metric_col in ['Impressions', 'Engagement']:
             if metric_col in df_p.columns:
                 df_p[metric_col] = pd.to_numeric(df_p[metric_col]).fillna(0)
@@ -291,7 +290,8 @@ with tab_team:
             label="📥 Export Executive Portfolio Progress PDF",
             data=team_report_bytes,
             file_name=f"Executive_Portfolio_Progress_{selected_ym.strftime('%Y_%m')}.pdf",
-            mime="application/pdf"
+            mime="application/pdf",
+            use_container_width=True
         )
     except Exception as pdf_err:
         st.error(f"PDF Compiler Error: {pdf_err}")
@@ -449,22 +449,8 @@ with tab_individual:
         col5.metric("Search Appearances", f"{int(prof_row['Appearances']):,}")
         
         st.markdown("---")
-        st.subheader("📈 Historical Profile Growth Vectors (All-Time History)")
-        
-        ic1, ic2 = st.columns(2)
-        with ic1:
-            st.caption("📈 Audience Reach Growth Curve")
-            st.line_chart(profile_metrics.set_index('Date')[['Total followers']], color="#0a66c2")
-            
-            st.caption("🔍 Search Engine Appearances Volatility Index")
-            st.line_chart(profile_metrics.set_index('Date')[['Appearances']], color="#ff9900")
-            
-        with ic2:
-            st.caption("🛡️ Social Selling Index (SSI) Tracking Vector")
-            st.line_chart(profile_metrics.set_index('Date')[['SSI']], color="#dc2626")
-            
-            st.caption("👀 Inbound Profile Discovery Views")
-            st.line_chart(profile_metrics.set_index('Date')[['Profile views']], color="#1db954")
+        st.subheader("📈 Long-Term Profile Growth Vector (Audience Base)")
+        st.line_chart(profile_metrics.set_index('Date')[['Total followers']], color="#0a66c2")
             
         st.markdown("---")
         st.subheader("📝 Monthly Content Performance Logs (Historical Vectors)")
