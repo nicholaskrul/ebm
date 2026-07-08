@@ -35,7 +35,7 @@ if "manager_notes" not in st.session_state:
 
 # --- 3. CREDENTIAL AUTHENTICATION & RATE LIMIT PROTECTION ---
 AIRTABLE_TOKEN = st.secrets.get("AIRTABLE_TOKEN")
-BASE_ID = st.secrets.get("BASE_ID")
+_ID = st.secrets.get("BASE_ID")
 
 if not AIRTABLE_TOKEN or not BASE_ID:
     st.error("❌ Configuration Missing! Define your `AIRTABLE_TOKEN` and `BASE_ID` inside your secret management dashboard.")
@@ -330,7 +330,7 @@ with tab_team:
             <tr>
                 <td><strong>{p_name}</strong><br><span style='color:#64748b; font-size:8pt;'>{row['Job Title']}</span></td>
                 <td>
-                    <span class='section-lbl'>Total Base:</span> <strong>{int(row['Followers']):,}</strong><br>
+                    <span class='section-lbl'>Total Followers:</span> <strong>{int(row['Followers']):,}</strong><br>
                     <span class='section-lbl'>Monthly:</span> <span class='{f_mom_cls}'>{row['Followers MoM%']:+.1f}% MoM</span><br>
                     <span class='section-lbl'>Overall:</span> <span class='pos'>+{int(row['Followers Inc Growth']):,} since since inception</span>
                 </td>
