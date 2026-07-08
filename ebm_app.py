@@ -551,14 +551,10 @@ def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, se
     </body></html>
     """
     comment_html = manager_notes_str.replace("\n", "<br>") if manager_notes_str else "<em>No remarks logged.</em>"
-    
-    # Flatten timelines defensively to isolate the charting canvas
-    hist_metrics_clean = hist_metrics.groupby('Date').last()
-
-    b64_ind_fol = export_plot_to_b64(hist_metrics_clean, 'Total followers', 'line', '#0a66c2')
-    b64_ind_ssi = export_plot_to_b64(hist_metrics_clean, 'SSI', 'line', '#dc2626')
-    b64_ind_app = export_plot_to_b64(hist_metrics_clean, 'Appearances', 'line', '#ff9900')
-    b64_ind_views = export_plot_to_b64(hist_metrics_clean, 'Profile views', 'line', '#1db954')
+    b64_ind_fol = export_plot_to_b64(hist_metrics.set_index('Date'), 'Total followers', 'line', '#0a66c2')
+    b64_ind_ssi = export_plot_to_b64(hist_metrics.set_index('Date'), 'SSI', 'line', '#dc2626')
+    b64_ind_app = export_plot_to_b64(hist_metrics.set_index('Date'), 'Appearances', 'line', '#ff9900')
+    b64_ind_views = export_plot_to_b64(hist_metrics.set_index('Date'), 'Profile views', 'line', '#1db954')
 
     content_section_html = ""
     if not content_df.empty:
@@ -772,7 +768,7 @@ with tab_individual:
         avg_dm_reach = month_posts['Decision-Maker Reach %'].mean() * 100 if not month_posts.empty and 'Decision-Maker Reach %' in month_posts.columns else 0.0
         total_saves = month_posts['Saves'].sum() if not month_posts.empty and 'Saves' in month_posts.columns else 0
         total_sends = month_posts['Sends on LinkedIn'].sum() if not month_posts.empty and 'Sends on LinkedIn' in month_posts.columns else 0
-        total_reposts = month_posts['Reposts'].sum() if not month_posts.empty hoarding and 'Reposts' in month_posts.columns else 0
+        total_reposts = month_posts['Reposts'].sum() if not month_posts.empty and 'Reposts' in month_posts.columns else 0  # Fixed 'hoarding' syntax typo
         total_high_intent = total_saves + total_sends + total_reposts
 
         accounts_seen = [str(x) for x in month_posts['Top Target Accounts'].dropna().unique() if str(x) != ""]
@@ -829,7 +825,7 @@ with tab_individual:
 
             st.markdown("### 🎯 Audience Quality & Account Intelligence Index")
             aq_col1, aq_col2, aq_col3 = st.columns(3)
-            aq_col1.metric("Avg. Decision-Maker Reach", f"{avg_dm_reach:.1f}%", help="Percentage of readers carrying Director, VP, CXO, Owner, or Partner corporate hierarchy titles.")
+            aq_col1.metric("Avg. Decision-Maker Reach", f"{avg_dm_reach:.1f}%", help="Percentage of readers carrying Director, VP, CXO, Owner, or Partner hierarchy titles.")
             aq_col2.metric("High-Intent Shares & Saves", f"{int(total_high_intent)} Actions", help="Sum total of bookmarks, direct internal messages, and user reposts.")
             with aq_col3:
                 st.markdown(f"**Top Target Accounts Reached:**\n`{accounts_summary_str}`")
