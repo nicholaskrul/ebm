@@ -46,7 +46,7 @@ retries = Retry(
     raise_on_status=True
 )
 
-# Force connection timeout limits to avoid infinite main thread loading hangs
+# TimeoutHTTPAdapter forces every request to fail after a bounded time instead of hanging indefinitely
 class TimeoutHTTPAdapter(HTTPAdapter):
     def __init__(self, *args, timeout=30, **kwargs):
         self.timeout = timeout
@@ -145,8 +145,8 @@ def load_all_data():
     return df_m, df_p
 
 
-# Wrap global execution loops inside explicit status spinners
-with st.spinner("⚡ Fetching portfolio records from Airtable..."):
+# Add dynamic loading visibility to the initial data handshake
+with st.spinner("⚡ Connecting to Airtable and fetching fresh portfolio metrics..."):
     try:
         df_metrics, df_posts = load_all_data()
         st.sidebar.success("⚡ Live Database Sync Active")
@@ -154,6 +154,7 @@ with st.spinner("⚡ Fetching portfolio records from Airtable..."):
         st.error(f"❌ Connection Mapping Breakpoint Encountered: {e}")
         st.stop()
 
+# Safely establish timelines while avoiding blanks
 df_metrics['YearMonth'] = df_metrics['Date'].dt.to_period('M')
 available_months = sorted(df_metrics['YearMonth'].dropna().unique(), reverse=True)
 all_profiles_list = sorted(df_metrics['Profile Name'].unique())
@@ -459,7 +460,7 @@ def generate_team_progress_pdf(df_source, trends_df, manager_notes, horizon_str)
     return buf.getvalue()
 
 
-def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, selected_profile, horizon_str, f_curr, f_mom, f_inc, s_curr, s_mom, s_inc, posts_count, views_count, app_count, avg_dm_reach, accounts_str, industries_str, total_high_intent):
+def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, selected_profile, job_title_str, horizon_str, f_curr, f_mom, f_inc, s_curr, s_mom, s_inc, posts_count, views_count, app_count, avg_dm_reach, accounts_str, industries_str, total_high_intent):
     html_template = """
     <!DOCTYPE html><html><head><meta charset='utf-8'><style>
         @page { size: A4; margin: 15mm 15mm; background-color: #f8fafc; }
@@ -581,10 +582,9 @@ def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, se
         """
 
     f_html = html_template.replace('__NAME__', selected_profile)\
-                          .replace('__TITLE__', 'Executive')\
+                          .replace('__TITLE__', job_title_str)\
                           .replace('__MONTH__', horizon_str)\
                           .replace('__FOL_CURR__', f"{int(f_curr):,}")\
-                          .replace('__MONTH__', horizon_str)\
                           .replace('__FOL_MOM__', f"{f_mom:+.1f}% MoM")\
                           .replace('__FOL_MOM_CLS__', 'pos' if f_mom >= 0 else 'neg')\
                           .replace('__FOL_INC__', f"{int(f_inc):,}")\
@@ -614,9 +614,6 @@ def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, se
 
 # --- 7. CROSS-PROFILE LEADERBOARD STANDINGS ---
 def compute_profile_standings(df_metrics, df_posts, all_profiles_list, selected_ym):
-    """Builds one row per profile with current-month values, month-over-month
-    deltas versus the prior calendar month, and cumulative growth since the
-    first recorded data point for that profile."""
     rows = []
     for name in all_profiles_list:
         pm = df_metrics[df_metrics['Profile Name'] == name].sort_values('Date')
@@ -753,7 +750,6 @@ with tab_team:
 # 🎯 TAB 2: INDIVIDUAL PROFILE DEEP DIVE
 # ==========================================
 with tab_individual:
-    # Safe multi-row tracking layout slice initialization
     matching_profile_rows = df_team_standings[df_team_standings['Profile Name'] == selected_profile] if not df_team_standings.empty else pd.DataFrame()
 
     if matching_profile_rows.empty:
@@ -796,21 +792,22 @@ with tab_individual:
                     single_pdf_bytes = generate_single_progress_pdf(
                         profile_metrics, individual_posts,
                         st.session_state.manager_notes.get(selected_profile, ""),
-                        selected_profile, selected_ym.strftime('%B %Y'),
+                        selected_profile, prof_row['Job Title'], selected_ym.strftime('%B %Y'),
                         prof_row['Followers'], prof_row['Followers MoM%'], prof_row['Followers Inc Growth'],
                         prof_row['SSI'], prof_row['SSI MoM Shift'], prof_row['SSI Inc Shift'],
                         prof_row['Posts Published'], prof_row['Views'], prof_row['Appearances'],
                         avg_dm_reach, accounts_summary_str, industries_summary_str, total_high_intent
                     )
-                    st.session_state.compiled_single_pdf = single_pdf_bytes
+                    # Namespaced profile storage block to fix crossover downloads cache leak bugs
+                    st.session_state[f"compiled_single_pdf_{selected_profile}"] = single_pdf_bytes
                     st.success("✨ Dossier completed successfully!")
                 except Exception as e:
                     st.error(f"Single Report Compile Error: {e}")
 
-            if "compiled_single_pdf" in st.session_state:
+            if f"compiled_single_pdf_{selected_profile}" in st.session_state:
                 st.download_button(
                     label=f"📥 Download {selected_profile}'s Monthly PDF Brief",
-                    data=st.session_state.compiled_single_pdf,
+                    data=st.session_state[f"compiled_single_pdf_{selected_profile}"],
                     file_name=f"LinkedIn_Brief_{selected_profile.replace(' ', '_')}_{selected_ym.strftime('%Y_%m')}.pdf",
                     mime="application/pdf",
                     use_container_width=True
