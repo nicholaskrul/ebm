@@ -299,9 +299,9 @@ with tab_team:
 
     st.markdown("---")
     t_col1, t_col2, t_col3, t_col4 = st.columns(4)
-    t_col1.metric("Total Managed Core Network Pool", f"{df_team_standings['Followers'].sum():,} Professionals")
-    t_col2.metric("Portfolio Average SSI Standing", f"{int(df_team_standings['SSI'].mean())}/100")
-    t_col3.metric("Total Pool Content Output", f"{df_team_standings['Posts Published'].sum()} Posts")
+    t_col1.metric("Total Follower Count", f"{df_team_standings['Followers'].sum():,} Professionals")
+    t_col2.metric("Average SSI Score", f"{int(df_team_standings['SSI'].mean())}/100")
+    t_col3.metric("Total Content Output", f"{df_team_standings['Posts Published'].sum()} Posts")
     t_col4.metric("Combined Active Views (Period)", f"{df_team_standings['Views'].sum():,}")
 
     st.markdown("---")
@@ -316,17 +316,17 @@ with tab_team:
     
     tc1, tc2 = st.columns(2)
     with tc1:
-        st.caption("👥 Combined Audience Pool Volume (Follower Growth)")
+        st.caption("👥 Combined Follower Growth")
         st.line_chart(team_trends_df[['Total followers']], color="#0a66c2")
         
-        st.caption("🔍 Combined Organic Search Engine Appearances")
+        st.caption("🔍 Combined Platform-Wide Visibility")
         st.line_chart(team_trends_df[['Appearances']], color="#ff9900")
         
     with tc2:
-        st.caption("👀 Combined Portfolio Discovery Profile Views")
+        st.caption("👀 Combined Profile Views")
         st.line_chart(team_trends_df[['Profile views']], color="#1db954")
         
-        st.caption("📈 Rolling Portfolio Average Social Selling Index (SSI)")
+        st.caption("📈 Rolling Average Social Selling Index (SSI)")
         st.line_chart(team_trends_df[['SSI']], color="#dc2626")
 
     st.markdown("---")
