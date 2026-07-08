@@ -40,14 +40,27 @@ api = Api(AIRTABLE_TOKEN)
 
 # Build an enterprise retry framework to completely bypass Airtable 5req/sec limits
 retries = Retry(
-    total=5,                                    
-    backoff_factor=1,                           
-    status_forcelist=[429, 500, 502, 503, 504], 
+    total=5,
+    backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504],
     raise_on_status=True
 )
 
-# Inject the rate-limit protector directly into pyairtable's built-in session object
-api.session.mount("https://", HTTPAdapter(max_retries=retries))
+# FIX: HTTPAdapter has no default timeout, so a hung network call (or a hung
+# Airtable response) would block forever with no error -- this is the most
+# likely cause of the app looking "stuck loading". TimeoutHTTPAdapter forces
+# every request to fail after a bounded time instead of hanging indefinitely.
+class TimeoutHTTPAdapter(HTTPAdapter):
+    def __init__(self, *args, timeout=30, **kwargs):
+        self.timeout = timeout
+        super().__init__(*args, **kwargs)
+
+    def send(self, request, **kwargs):
+        kwargs.setdefault("timeout", self.timeout)
+        return super().send(request, **kwargs)
+
+# Inject the rate-limit protector + timeout directly into pyairtable's built-in session object
+api.session.mount("https://", TimeoutHTTPAdapter(max_retries=retries, timeout=30))
 
 # Define your tables using the protected API instance
 profiles_table = api.table(BASE_ID, "Profiles")
@@ -56,15 +69,15 @@ posts_table = api.table(BASE_ID, "Posts and content")
 
 
 # --- 3. DATA RECONCILIATION & PIPELINE ENGINE ---
-@st.cache_data(ttl=600)  
+@st.cache_data(ttl=600)
 def load_all_data():
     raw_profiles = profiles_table.all()
     raw_metrics = metrics_table.all()
     raw_posts = posts_table.all()
-    
+
     id_to_name = {r['id']: r['fields'].get('Full Name', 'Unknown') for r in raw_profiles}
     id_to_title = {r['id']: r['fields'].get('Job Title', 'Executive') for r in raw_profiles}
-    
+
     # Process Metrics Dataset
     metrics_data = []
     for r in raw_metrics:
@@ -73,14 +86,14 @@ def load_all_data():
         fields['Profile Name'] = id_to_name.get(profile_ids[0], 'Unassigned') if profile_ids else 'Unassigned'
         fields['Job Title'] = id_to_title.get(profile_ids[0], 'Executive') if profile_ids else 'Executive'
         metrics_data.append(fields)
-        
+
     df_m = pd.DataFrame(metrics_data)
     if not df_m.empty:
         df_m = df_m.dropna(subset=['Date'])
         df_m['Date'] = pd.to_datetime(df_m['Date'])
         ssi_col = [col for col in df_m.columns if col.startswith('SSI')][0] if [col for col in df_m.columns if col.startswith('SSI')] else 'SSI'
         df_m = df_m.rename(columns={ssi_col: 'SSI'})
-        
+
         for metric_col in ['Total followers', 'SSI', 'Profile views', 'Appearances']:
             if metric_col in df_m.columns:
                 df_m[metric_col] = pd.to_numeric(df_m[metric_col]).fillna(0)
@@ -88,7 +101,7 @@ def load_all_data():
                 df_m[metric_col] = 0
     else:
         df_m = pd.DataFrame(columns=['Profile Name', 'Job Title', 'Date', 'Total followers', 'SSI', 'Profile views', 'Appearances'])
-        
+
     # Process Content Logs Dataset
     posts_data = []
     for r in raw_posts:
@@ -96,16 +109,16 @@ def load_all_data():
         profile_ids = fields.get('Profile', [])
         fields['Profile Name'] = id_to_name.get(profile_ids[0], 'Unassigned') if profile_ids else 'Unassigned'
         posts_data.append(fields)
-        
+
     df_p = pd.DataFrame(posts_data)
     if not df_p.empty and 'Publish Date' in df_p.columns:
         df_p = df_p.dropna(subset=['Publish Date'])
         df_p['Publish Date'] = pd.to_datetime(df_p['Publish Date'])
         df_p['YearMonth'] = df_p['Publish Date'].dt.to_period('M')
-        
+
         numeric_cols = [
-            'Impressions', 'Reactions', 'Comments', 'Profile Visitors From Post', 
-            'Members Reached', 'Followers Gained From Post', 'Reposts', 'Saves', 
+            'Impressions', 'Reactions', 'Comments', 'Profile Visitors From Post',
+            'Members Reached', 'Followers Gained From Post', 'Reposts', 'Saves',
             'Sends on LinkedIn', 'Decision-Maker Reach %'
         ]
         for metric_col in numeric_cols:
@@ -113,12 +126,12 @@ def load_all_data():
                 df_p[metric_col] = pd.to_numeric(df_p[metric_col]).fillna(0)
             else:
                 df_p[metric_col] = 0
-                
+
         if 'Engagement' not in df_p.columns:
             df_p['Engagement'] = df_p['Reactions'] + df_p['Comments'] + df_p['Reposts']
         else:
             df_p['Engagement'] = pd.to_numeric(df_p['Engagement']).fillna(0)
-            
+
         for text_col in ['Top Target Accounts', 'Top Core Industries', 'Topic']:
             if text_col not in df_p.columns:
                 df_p[text_col] = ""
@@ -126,12 +139,12 @@ def load_all_data():
                 df_p[text_col] = df_p[text_col].fillna("")
     else:
         df_p = pd.DataFrame(columns=[
-            'Profile Name', 'Publish Date', 'YearMonth', 'Impressions', 'Engagement', 
-            'Reactions', 'Comments', 'Profile Visitors From Post', 'Members Reached', 
-            'Followers Gained From Post', 'Reposts', 'Saves', 'Sends on LinkedIn', 
+            'Profile Name', 'Publish Date', 'YearMonth', 'Impressions', 'Engagement',
+            'Reactions', 'Comments', 'Profile Visitors From Post', 'Members Reached',
+            'Followers Gained From Post', 'Reposts', 'Saves', 'Sends on LinkedIn',
             'Decision-Maker Reach %', 'Top Target Accounts', 'Top Core Industries', 'Topic'
         ])
-        
+
     return df_m, df_p
 
 
@@ -186,7 +199,7 @@ with st.sidebar.expander("📤 Post Ingestion Center"):
     target_upload_profile = st.selectbox("Assign Post Data To:", all_profiles_list, key="upload_exec_select")
     uploaded_post_file = st.file_uploader("Upload LinkedIn Excel / CSV", type=["xlsx", "csv"])
     entered_topic = st.text_input("Content Topic / Context", placeholder="e.g., Q3 Keynote Address")
-    
+
     if uploaded_post_file is not None:
         if st.button("🚀 Push Post to Database", use_container_width=True):
             try:
@@ -209,7 +222,7 @@ with st.sidebar.expander("📤 Post Ingestion Center"):
                         df_upload = pd.read_csv(uploaded_post_file)
                 else:
                     df_upload = pd.read_excel(uploaded_post_file)
-                
+
                 extracted_url = df_upload.columns[1] if len(df_upload.columns) > 1 else "Organic Post Link"
                 num_cols = len(df_upload.columns)
                 if num_cols >= 3:
@@ -221,10 +234,10 @@ with st.sidebar.expander("📤 Post Ingestion Center"):
                     df_upload.columns = ['Label']
                     df_upload['Value'] = "0"
                     df_upload['Pct'] = "0%"
-                
+
                 df_upload['Label'] = df_upload['Label'].astype(str).str.strip()
                 df_upload['Value'] = df_upload['Value'].astype(str).str.strip()
-                
+
                 def read_field(label):
                     match_row = df_upload[df_upload['Label'] == label]
                     if not match_row.empty:
@@ -235,15 +248,15 @@ with st.sidebar.expander("📤 Post Ingestion Center"):
                             digits = re.sub(r'[^\d]', '', val_str)
                             return int(digits) if digits else 0
                     return 0
-                
+
                 raw_date = df_upload[df_upload['Label'] == 'Post Date'].iloc[0]['Value'] if not df_upload[df_upload['Label'] == 'Post Date'].empty else datetime.today().strftime('%Y-%m-%d')
                 try: clean_date = pd.to_datetime(raw_date).strftime('%Y-%m-%d')
                 except: clean_date = datetime.today().strftime('%Y-%m-%d')
-                
+
                 companies, industries = [], []
                 computed_dm_reach = 0.0
                 decision_tiers = ['Director', 'VP', 'CXO', 'Owner', 'Partner']
-                
+
                 if 'Pct' in df_upload.columns:
                     df_upload['Pct'] = df_upload['Pct'].astype(str).str.strip()
                     for _, r in df_upload.iterrows():
@@ -253,14 +266,14 @@ with st.sidebar.expander("📤 Post Ingestion Center"):
                         elif c_label == 'Seniority' and c_val in decision_tiers:
                             try: computed_dm_reach += float(c_pct.replace('%', ''))
                             except: pass
-                
+
                 all_raw_profiles = profiles_table.all()
                 profile_record_id = None
                 for p_rec in all_raw_profiles:
                     if p_rec['fields'].get('Full Name') == target_upload_profile:
                         profile_record_id = p_rec['id']
                         break
-                
+
                 payload = {
                     "Profile": [profile_record_id] if profile_record_id else [],
                     "Publish Date": clean_date,
@@ -279,7 +292,7 @@ with st.sidebar.expander("📤 Post Ingestion Center"):
                     "Top Target Accounts": ", ".join(companies[:3]),
                     "Top Core Industries": ", ".join(industries[:3])
                 }
-                
+
                 posts_table.create(payload)
                 st.sidebar.success("🎉 Ingestion complete! Refreshing...")
                 st.cache_data.clear()
@@ -295,24 +308,24 @@ with st.sidebar.expander("📤 Post Ingestion Center"):
 def export_plot_to_b64(df_source, column_name, chart_type='line', color='#0a66c2'):
     if df_source.empty or column_name not in df_source.columns:
         return ""
-    
+
     # Switched to unlinked object figures to guarantee concurrent thread stability
     fig = Figure(figsize=(5.5, 2.8), facecolor='#ffffff')
     ax = fig.subplots()
     ax.set_facecolor('#ffffff')
-    
+
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     ax.spines['left'].set_color('#cbd5e1')
     ax.spines['bottom'].set_color('#cbd5e1')
     ax.tick_params(colors='#64748b', labelsize=8)
     ax.grid(axis='y', linestyle='--', alpha=0.5, color='#e2e8f0')
-    
+
     if chart_type == 'line':
         ax.plot(df_source.index, df_source[column_name], color=color, linewidth=2, marker='o', markersize=3)
     elif chart_type == 'bar':
         ax.bar(df_source.index, df_source[column_name], color=color, alpha=0.85, width=0.6)
-        
+
     img_buf = io.BytesIO()
     fig.savefig(img_buf, format='png', bbox_inches='tight', dpi=150)
     img_buf.seek(0)
@@ -407,7 +420,7 @@ def generate_team_progress_pdf(df_source, trends_df, manager_notes, horizon_str)
         f_mom_cls = "pos" if row['Followers MoM%'] >= 0 else "neg"
         s_mom_cls = "pos" if row['SSI MoM Shift'] >= 0 else "neg"
         s_inc_cls = "pos" if row['SSI Inc Shift'] >= 0 else "neg"
-        
+
         rows_html += f"""
         <tr>
             <td><strong>{p_name}</strong><br><span style='color:#64748b; font-size:8pt;'>{row['Job Title']}</span></td>
@@ -429,12 +442,12 @@ def generate_team_progress_pdf(df_source, trends_df, manager_notes, horizon_str)
             <td>{note_html}</td>
         </tr>
         """
-    
+
     b64_fol = export_plot_to_b64(trends_df, 'Total followers', 'line', '#0a66c2')
     b64_views = export_plot_to_b64(trends_df, 'Profile views', 'line', '#1db954')
     b64_app = export_plot_to_b64(trends_df, 'Appearances', 'line', '#ff9900')
     b64_ssi = export_plot_to_b64(trends_df, 'SSI', 'line', '#dc2626')
-    
+
     final_html = html_template.replace("__ROWS__", rows_html)\
                               .replace("__HORIZON__", horizon_str)\
                               .replace("__TOTAL_REACH__", f"{df_source['Followers'].sum():,}")\
@@ -444,7 +457,7 @@ def generate_team_progress_pdf(df_source, trends_df, manager_notes, horizon_str)
                               .replace("__IMG_VIEWS__", b64_views)\
                               .replace("__IMG_APP__", b64_app)\
                               .replace("__IMG_SSI__", b64_ssi)
-                              
+
     buf = io.BytesIO()
     HTML(string=final_html).write_pdf(buf)
     return buf.getvalue()
@@ -489,7 +502,7 @@ def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, se
             • Profile Discovery Views: <strong>__VIEWS__</strong><br>
             • Search Appearances Indexes: <strong>__APP__</strong>
         </div>
-        
+
         <div class='card' style='border-top-color: #7c3aed;'>
             <strong>Audience Quality & Account Intelligence Index</strong><br>
             • Average Decision-Maker Reach Tier: <strong>__DM_REACH__%</strong><br>
@@ -497,7 +510,7 @@ def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, se
             • Primary Industry Heatmaps: <em>__TARGET_INDUSTRIES__</em><br>
             • Content High-Intent Signals: <strong>__SAVED_SHARED__ Actions (Saves/Sends/Reposts)</strong>
         </div>
-        
+
         <h2>Manager Commentary & Tactical Alignment</h2>
         <div class='notes-block'>__COMMENTARY__</div>
 
@@ -542,14 +555,14 @@ def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, se
     b64_ind_ssi = export_plot_to_b64(hist_metrics.set_index('Date'), 'SSI', 'line', '#dc2626')
     b64_ind_app = export_plot_to_b64(hist_metrics.set_index('Date'), 'Appearances', 'line', '#ff9900')
     b64_ind_views = export_plot_to_b64(hist_metrics.set_index('Date'), 'Profile views', 'line', '#1db954')
-    
+
     content_section_html = ""
     if not content_df.empty:
         monthly_posts_perf = content_df.groupby('YearMonth').agg({'Impressions': 'sum', 'Engagement': 'sum'}).sort_index()
         monthly_posts_perf.index = monthly_posts_perf.index.astype(str)
         b64_post_imp = export_plot_to_b64(monthly_posts_perf, 'Impressions', 'bar', '#0a66c2')
         b64_post_eng = export_plot_to_b64(monthly_posts_perf, 'Engagement', 'bar', '#1db954')
-        
+
         content_section_html = f"""
         <div class="page-break"></div>
         <div class='header'><h1>📝 Monthly Content Performance Logs (Historical Vectors)</h1></div>
@@ -597,10 +610,67 @@ def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, se
                           .replace('__CHART_APP__', b64_ind_app)\
                           .replace('__CHART_VIEWS__', b64_ind_views)\
                           .replace('__CONTENT_SECTION__', content_section_html)
-                          
+
     buf = io.BytesIO()
     HTML(string=f_html).write_pdf(buf)
     return buf.getvalue()
+
+
+# --- 7. CROSS-PROFILE LEADERBOARD STANDINGS (was missing entirely) ---
+def compute_profile_standings(df_metrics, df_posts, all_profiles_list, selected_ym):
+    """Builds one row per profile with current-month values, month-over-month
+    deltas versus the prior calendar month, and cumulative growth since the
+    first recorded data point for that profile."""
+    rows = []
+    for name in all_profiles_list:
+        pm = df_metrics[df_metrics['Profile Name'] == name].sort_values('Date')
+        if pm.empty:
+            continue
+
+        job_title = pm['Job Title'].iloc[-1] if 'Job Title' in pm.columns else 'Executive'
+        first = pm.iloc[0]
+
+        current_rows = pm[pm['YearMonth'] == selected_ym]
+        current = current_rows.iloc[-1] if not current_rows.empty else pm.iloc[-1]
+
+        prev_rows = pm[pm['YearMonth'] == (selected_ym - 1)]
+        prev = prev_rows.iloc[-1] if not prev_rows.empty else None
+
+        followers_curr = current['Total followers']
+        followers_prev = prev['Total followers'] if prev is not None else followers_curr
+        followers_mom = ((followers_curr - followers_prev) / followers_prev * 100) if followers_prev else 0.0
+        followers_inc = followers_curr - first['Total followers']
+
+        ssi_curr = current['SSI']
+        ssi_prev = prev['SSI'] if prev is not None else ssi_curr
+        ssi_mom = ssi_curr - ssi_prev
+        ssi_inc = ssi_curr - first['SSI']
+
+        posts_count = 0
+        if not df_posts.empty:
+            posts_count = len(df_posts[(df_posts['Profile Name'] == name) & (df_posts['YearMonth'] == selected_ym)])
+
+        rows.append({
+            'Profile Name': name,
+            'Job Title': job_title,
+            'Followers': followers_curr,
+            'Followers MoM%': followers_mom,
+            'Followers Inc Growth': followers_inc,
+            'SSI': ssi_curr,
+            'SSI MoM Shift': ssi_mom,
+            'SSI Inc Shift': ssi_inc,
+            'Posts Published': posts_count,
+            'Views': current['Profile views'],
+            'Appearances': current['Appearances'],
+        })
+
+    return pd.DataFrame(rows)
+
+
+df_team_standings = compute_profile_standings(df_metrics, df_posts, all_profiles_list, selected_ym)
+
+# --- 8. TAB LAYOUT (was missing entirely) ---
+tab_team, tab_individual = st.tabs(["👥 Team Overview", "🎯 Individual Deep Dive"])
 
 
 # ==========================================
@@ -610,7 +680,7 @@ with tab_team:
     st.subheader("👥 Managed Portfolio Summary Leaderboard")
     st.markdown("Aggregated standings with cross-profile analytics tracking overall, monthly progress, and content velocity.")
     st.markdown("---")
-    
+
     with st.expander("📝 Edit Executive Monthly Commentary Notes"):
         cmt_cols = st.columns(2)
         for idx, name in enumerate(all_profiles_list):
@@ -622,7 +692,7 @@ with tab_team:
                     on_change=sync_from_team,
                     args=(name,)
                 )
-                
+
     team_trends_df = df_metrics.groupby('Date').agg({
         'Total followers': 'sum',
         'Profile views': 'sum',
@@ -640,7 +710,7 @@ with tab_team:
             st.success("✨ Report compilation complete!")
         except Exception as pdf_err:
             st.error(f"PDF Compiler Error: {pdf_err}")
-            
+
     if "compiled_team_pdf" in st.session_state:
         st.download_button(
             label="📥 Download Executive Portfolio Progress PDF",
@@ -659,7 +729,7 @@ with tab_team:
 
     st.markdown("---")
     st.subheader("📊 Combined Team Macro-Trend Vectors (All-Time History)")
-    
+
     tc1, tc2 = st.columns(2)
     with tc1:
         st.caption("👥 Combined Follower Growth")
@@ -694,16 +764,16 @@ with tab_individual:
 
     individual_posts = df_posts[df_posts['Profile Name'] == selected_profile].copy()
     month_posts = individual_posts[individual_posts['YearMonth'] == selected_ym] if not individual_posts.empty else pd.DataFrame()
-    
+
     avg_dm_reach = month_posts['Decision-Maker Reach %'].mean() * 100 if not month_posts.empty and 'Decision-Maker Reach %' in month_posts.columns else 0.0
     total_saves = month_posts['Saves'].sum() if not month_posts.empty and 'Saves' in month_posts.columns else 0
     total_sends = month_posts['Sends on LinkedIn'].sum() if not month_posts.empty and 'Sends on LinkedIn' in month_posts.columns else 0
     total_reposts = month_posts['Reposts'].sum() if not month_posts.empty and 'Reposts' in month_posts.columns else 0
     total_high_intent = total_saves + total_sends + total_reposts
-    
+
     accounts_seen = [str(x) for x in month_posts['Top Target Accounts'].dropna().unique() if str(x) != ""]
     accounts_summary_str = ", ".join(accounts_seen)[:100] if accounts_seen else "No corporate target tracking entries logged."
-    
+
     industries_seen = [str(x) for x in month_posts['Top Core Industries'].dropna().unique() if str(x) != ""]
     industries_summary_str = ", ".join(industries_seen)[:100] if industries_seen else "No industrial tracking profiles mapped."
 
@@ -719,11 +789,11 @@ with tab_individual:
             on_change=sync_from_ind,
             args=(selected_profile,)
         )
-        
+
         if st.button(f"🛠️ Prepare {selected_profile}'s Monthly Brief"):
             try:
                 single_pdf_bytes = generate_single_progress_pdf(
-                    profile_metrics, individual_posts, 
+                    profile_metrics, individual_posts,
                     st.session_state.manager_notes.get(selected_profile, ""),
                     selected_profile, selected_ym.strftime('%B %Y'),
                     prof_row['Followers'], prof_row['Followers MoM%'], prof_row['Followers Inc Growth'],
@@ -735,7 +805,7 @@ with tab_individual:
                 st.success("✨ Dossier completed successfully!")
             except Exception as e:
                 st.error(f"Single Report Compile Error: {e}")
-                
+
         if "compiled_single_pdf" in st.session_state:
             st.download_button(
                 label=f"📥 Download {selected_profile}'s Monthly PDF Brief",
@@ -752,7 +822,7 @@ with tab_individual:
         col3.metric("Posts (This Month)", f"{int(prof_row['Posts Published'])}")
         col4.metric("Profile Views", f"{int(prof_row['Views']):,}")
         col5.metric("Search Appearances", f"{int(prof_row['Appearances']):,}")
-        
+
         st.markdown("### 🎯 Audience Quality & Account Intelligence Index")
         aq_col1, aq_col2, aq_col3 = st.columns(3)
         aq_col1.metric("Avg. Decision-Maker Reach", f"{avg_dm_reach:.1f}%", help="Percentage of readers carrying Director, VP, CXO, Owner, or Partner corporate hierarchy titles.")
@@ -762,7 +832,7 @@ with tab_individual:
 
         st.markdown("---")
         st.subheader("📊 Core Strategic Performance Vectors (All-Time History)")
-        
+
         ic1, ic2 = st.columns(2)
         with ic1:
             st.caption("📈 Total Followers")
@@ -774,18 +844,18 @@ with tab_individual:
             st.line_chart(profile_metrics.set_index('Date')[['SSI']], color="#dc2626")
             st.caption("👀 Profile Views")
             st.line_chart(profile_metrics.set_index('Date')[['Profile views']], color="#1db954")
-            
+
         st.markdown("---")
         st.subheader("📝 Monthly Content Performance Logs (Historical Vectors)")
-        
+
         if not individual_posts.empty:
             monthly_posts_perf = individual_posts.groupby('YearMonth').agg({
                 'Impressions': 'sum',
                 'Engagement': 'sum'
             }).sort_index()
-            
+
             monthly_posts_perf.index = monthly_posts_perf.index.astype(str)
-            
+
             pc1, pc2 = st.columns(2)
             with pc1:
                 st.caption("📈 Total Organic Post Impressions by Calendar Month")
@@ -793,7 +863,7 @@ with tab_individual:
             with pc2:
                 st.caption("❤️ Total Post Engagement Interactions by Calendar Month")
                 st.bar_chart(monthly_posts_perf['Engagement'], color="#1db954")
-                
+
             st.markdown("### 📋 Granular Post Performance Tracking")
             if not month_posts.empty:
                 display_posts = month_posts.copy()
