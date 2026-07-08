@@ -29,11 +29,7 @@ st.markdown('''
 </style>
 ''', unsafe_allow_html=True)
 
-# --- 2. STATE MANAGEMENT FOR INTERACTIVE COMMENTS ---
-if "manager_notes" not in st.session_state:
-    st.session_state.manager_notes = {}
-
-# --- 3. CREDENTIAL AUTHENTICATION & RATE LIMIT PROTECTION ---
+# --- 2. CREDENTIAL AUTHENTICATION & RATE LIMIT PROTECTION ---
 AIRTABLE_TOKEN = st.secrets.get("AIRTABLE_TOKEN")
 BASE_ID = st.secrets.get("BASE_ID")
 
@@ -61,7 +57,7 @@ metrics_table = api.table(BASE_ID, "Weekly Metrics")
 posts_table = api.table(BASE_ID, "Posts and content")
 
 
-# --- 4. DATA RECONCILIATION & PIPELINE ENGINE ---
+# --- 3. DATA RECONCILIATION & PIPELINE ENGINE ---
 @st.cache_data(ttl=600)  
 def load_all_data():
     raw_profiles = profiles_table.all()
@@ -86,6 +82,13 @@ def load_all_data():
         df_m['Date'] = pd.to_datetime(df_m['Date'])
         ssi_col = [col for col in df_m.columns if col.startswith('SSI')][0] if [col for col in df_m.columns if col.startswith('SSI')] else 'SSI'
         df_m = df_m.rename(columns={ssi_col: 'SSI'})
+        
+        # Defensive Type Coercion to prevent mathematical calculation failures
+        for metric_col in ['Total followers', 'SSI', 'Profile views', 'Appearances']:
+            if metric_col in df_m.columns:
+                df_m[metric_col] = pd.to_numeric(df_m[metric_col]).fillna(0)
+            else:
+                df_m[metric_col] = 0
     else:
         df_m = pd.DataFrame(columns=['Profile Name', 'Job Title', 'Date', 'Total followers', 'SSI', 'Profile views', 'Appearances'])
         
@@ -124,6 +127,31 @@ except Exception as e:
 df_metrics['YearMonth'] = df_metrics['Date'].dt.to_period('M')
 available_months = sorted(df_metrics['YearMonth'].dropna().unique(), reverse=True)
 all_profiles_list = sorted(df_metrics['Profile Name'].unique())
+
+# --- 4. STATE MANAGEMENT & CROSS-TAB INPUT SYNCHRONIZATION ---
+if "manager_notes" not in st.session_state:
+    st.session_state.manager_notes = {}
+
+# Instantiate memory profiles and balance state containers
+for name in all_profiles_list:
+    if name not in st.session_state.manager_notes:
+        st.session_state.manager_notes[name] = ""
+    if f"team_notes_{name}" not in st.session_state:
+        st.session_state[f"team_notes_{name}"] = st.session_state.manager_notes[name]
+    if f"ind_notes_{name}" not in st.session_state:
+        st.session_state[f"ind_notes_{name}"] = st.session_state.manager_notes[name]
+
+# State synchronization callback functions
+def sync_from_team(name):
+    val = st.session_state[f"team_notes_{name}"]
+    st.session_state.manager_notes[name] = val
+    st.session_state[f"ind_notes_{name}"] = val
+
+def sync_from_ind(name):
+    val = st.session_state[f"ind_notes_{name}"]
+    st.session_state.manager_notes[name] = val
+    st.session_state[f"team_notes_{name}"] = val
+
 
 # --- GLOBAL NAVIGATION CONTROL PANEL ---
 st.sidebar.title("Navigation Panel")
@@ -169,7 +197,24 @@ def export_plot_to_b64(df_source, column_name, chart_type='line', color='#0a66c2
 team_records = []
 for name in all_profiles_list:
     prof_df = df_metrics[df_metrics['Profile Name'] == name].sort_values('Date')
-    if prof_df.empty: continue
+    
+    # Empty History Profile Guardrail
+    if prof_df.empty:
+        team_records.append({
+            'Profile Name': name,
+            'Job Title': 'Executive',
+            'Followers': 0,
+            'Followers MoM%': 0.0,
+            'Followers Inc Growth': 0,
+            'SSI': 0,
+            'SSI MoM Shift': 0,
+            'SSI Inc Shift': 0,
+            'Views': 0,
+            'Appearances': 0,
+            'Posts Published': 0,
+            'Date': datetime.today()
+        })
+        continue
     
     c_month = prof_df[prof_df['YearMonth'] == selected_ym]
     p_month = prof_df[prof_df['YearMonth'] == (selected_ym - 1)]
@@ -208,11 +253,6 @@ for name in all_profiles_list:
 
 df_team_standings = pd.DataFrame(team_records)
 
-# Stabilize inputs across cache clearances
-for name in all_profiles_list:
-    if name not in st.session_state.manager_notes:
-        st.session_state.manager_notes[name] = ""
-
 
 # --- 7. TOP-LEVEL DASHBOARD SYSTEM SEGMENTATION ---
 tab_team, tab_individual = st.tabs(["👥 Combined Team Overview", "🎯 Individual Profile Deep Dive"])
@@ -231,10 +271,11 @@ with tab_team:
         for idx, name in enumerate(all_profiles_list):
             target_col = cmt_cols[0] if idx % 2 == 0 else cmt_cols[1]
             with target_col:
-                st.session_state.manager_notes[name] = st.text_area(
+                st.text_area(
                     f"Notes for {name} ({selected_ym.strftime('%b %Y')}):",
-                    value=st.session_state.manager_notes[name],
-                    key=f"team_notes_{name}"
+                    key=f"team_notes_{name}",
+                    on_change=sync_from_team,
+                    args=(name,)
                 )
                 
     def generate_team_progress_pdf(df_source, trends_df):
@@ -351,7 +392,7 @@ with tab_team:
         b64_fol = export_plot_to_b64(trends_df, 'Total followers', 'line', '#0a66c2')
         b64_views = export_plot_to_b64(trends_df, 'Profile views', 'line', '#1db954')
         b64_app = export_plot_to_b64(trends_df, 'Appearances', 'line', '#ff9900')
-        b64_ssi = export_plot_to_b64(trends_df, 'SSI', 'line', '#dc2626')
+        b64_ssi = export_plot_to_b64(trends_df, 'SSI', 'line', '#get_ssi')
         
         final_html = html_template.replace("__ROWS__", rows_html)\
                                   .replace("__HORIZON__", selected_ym.strftime('%B %Y'))\
@@ -435,10 +476,11 @@ with tab_individual:
     ind_col_left, ind_col_right = st.columns([2, 1])
     with ind_col_right:
         st.subheader("✏️ Performance Brief Notes")
-        st.session_state.manager_notes[selected_profile] = st.text_area(
+        st.text_area(
             "Add context or monthly achievement statements for this user's PDF brief:",
-            value=st.session_state.manager_notes[selected_profile],
-            key=f"ind_notes_{selected_profile}"
+            key=f"ind_notes_{selected_profile}",
+            on_change=sync_from_ind,
+            args=(selected_profile,)
         )
         
         def generate_single_progress_pdf(hist_metrics, content_df):
