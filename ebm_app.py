@@ -299,7 +299,7 @@ with tab_team:
 
     st.markdown("---")
     t_col1, t_col2, t_col3, t_col4 = st.columns(4)
-    t_col1.metric("Total Follower Count", f"{df_team_standings['Followers'].sum():,} Professionals")
+    t_col1.metric("Total Follower Count", f"{df_team_standings['Followers'].sum():,} ")
     t_col2.metric("Average SSI Score", f"{int(df_team_standings['SSI'].mean())}/100")
     t_col3.metric("Total Content Output", f"{df_team_standings['Posts Published'].sum()} Posts")
     t_col4.metric("Combined Active Views (Period)", f"{df_team_standings['Views'].sum():,}")
