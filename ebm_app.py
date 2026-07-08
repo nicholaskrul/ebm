@@ -439,11 +439,14 @@ def generate_team_progress_pdf(df_source, trends_df, manager_notes, horizon_str)
             <td>{note_html}</td>
         </tr>
         """
+    
+    # Flatten timelines to avoid duplicate timeline crashes inside the group generator
+    hist_metrics_clean = trends_df.groupby(level=0).last() if isinstance(trends_df.index, pd.MultiIndex) else trends_df.groupby(trends_df.index).last()
 
-    b64_fol = export_plot_to_b64(trends_df, 'Total followers', 'line', '#0a66c2')
-    b64_views = export_plot_to_b64(trends_df, 'Profile views', 'line', '#1db954')
-    b64_app = export_plot_to_b64(trends_df, 'Appearances', 'line', '#ff9900')
-    b64_ssi = export_plot_to_b64(trends_df, 'SSI', 'line', '#dc2626')
+    b64_fol = export_plot_to_b64(hist_metrics_clean, 'Total followers', 'line', '#0a66c2')
+    b64_views = export_plot_to_b64(hist_metrics_clean, 'Profile views', 'line', '#1db954')
+    b64_app = export_plot_to_b64(hist_metrics_clean, 'Appearances', 'line', '#ff9900')
+    b64_ssi = export_plot_to_b64(hist_metrics_clean, 'SSI', 'line', '#dc2626')
 
     final_html = html_template.replace("__ROWS__", rows_html)\
                               .replace("__HORIZON__", horizon_str)\
@@ -548,10 +551,14 @@ def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, se
     </body></html>
     """
     comment_html = manager_notes_str.replace("\n", "<br>") if manager_notes_str else "<em>No remarks logged.</em>"
-    b64_ind_fol = export_plot_to_b64(hist_metrics.set_index('Date'), 'Total followers', 'line', '#0a66c2')
-    b64_ind_ssi = export_plot_to_b64(hist_metrics.set_index('Date'), 'SSI', 'line', '#dc2626')
-    b64_ind_app = export_plot_to_b64(hist_metrics.set_index('Date'), 'Appearances', 'line', '#ff9900')
-    b64_ind_views = export_plot_to_b64(hist_metrics.set_index('Date'), 'Profile views', 'line', '#1db954')
+    
+    # Flatten timelines defensively to isolate the charting canvas
+    hist_metrics_clean = hist_metrics.groupby('Date').last()
+
+    b64_ind_fol = export_plot_to_b64(hist_metrics_clean, 'Total followers', 'line', '#0a66c2')
+    b64_ind_ssi = export_plot_to_b64(hist_metrics_clean, 'SSI', 'line', '#dc2626')
+    b64_ind_app = export_plot_to_b64(hist_metrics_clean, 'Appearances', 'line', '#ff9900')
+    b64_ind_views = export_plot_to_b64(hist_metrics_clean, 'Profile views', 'line', '#1db954')
 
     content_section_html = ""
     if not content_df.empty:
@@ -765,7 +772,7 @@ with tab_individual:
         avg_dm_reach = month_posts['Decision-Maker Reach %'].mean() * 100 if not month_posts.empty and 'Decision-Maker Reach %' in month_posts.columns else 0.0
         total_saves = month_posts['Saves'].sum() if not month_posts.empty and 'Saves' in month_posts.columns else 0
         total_sends = month_posts['Sends on LinkedIn'].sum() if not month_posts.empty and 'Sends on LinkedIn' in month_posts.columns else 0
-        total_reposts = month_posts['Reposts'].sum() if not month_posts.empty and 'Reposts' in month_posts.columns else 0
+        total_reposts = month_posts['Reposts'].sum() if not month_posts.empty hoarding and 'Reposts' in month_posts.columns else 0
         total_high_intent = total_saves + total_sends + total_reposts
 
         accounts_seen = [str(x) for x in month_posts['Top Target Accounts'].dropna().unique() if str(x) != ""]
@@ -798,7 +805,6 @@ with tab_individual:
                         prof_row['Posts Published'], prof_row['Views'], prof_row['Appearances'],
                         avg_dm_reach, accounts_summary_str, industries_summary_str, total_high_intent
                     )
-                    # Namespaced profile storage block to fix crossover downloads cache leak bugs
                     st.session_state[f"compiled_single_pdf_{selected_profile}"] = single_pdf_bytes
                     st.success("✨ Dossier completed successfully!")
                 except Exception as e:
@@ -831,17 +837,20 @@ with tab_individual:
             st.markdown("---")
             st.subheader("📊 Core Strategic Performance Vectors (All-Time History)")
 
+            # Upgraded trend line calculations using grouped index metrics to bypass timeline crashes
+            profile_metrics_clean = profile_metrics.groupby('Date').last()
+
             ic1, ic2 = st.columns(2)
             with ic1:
                 st.caption("📈 Total Followers")
-                st.line_chart(profile_metrics.set_index('Date')[['Total followers']], color="#0a66c2")
+                st.line_chart(profile_metrics_clean[['Total followers']], color="#0a66c2")
                 st.caption("🔍 Platform-Wide Profile Appearances")
-                st.line_chart(profile_metrics.set_index('Date')[['Appearances']], color="#ff9900")
+                st.line_chart(profile_metrics_clean[['Appearances']], color="#ff9900")
             with ic2:
                 st.caption("🛡️ Social Selling Index (SSI) Tracker")
-                st.line_chart(profile_metrics.set_index('Date')[['SSI']], color="#dc2626")
+                st.line_chart(profile_metrics_clean[['SSI']], color="#dc2626")
                 st.caption("👀 Profile Views")
-                st.line_chart(profile_metrics.set_index('Date')[['Profile views']], color="#1db954")
+                st.line_chart(profile_metrics_clean[['Profile views']], color="#1db954")
 
             st.markdown("---")
             st.subheader("📝 Monthly Content Performance Logs (Historical Vectors)")
