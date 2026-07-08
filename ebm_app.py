@@ -6,7 +6,12 @@ import io
 import requests
 from urllib3.util import Retry
 from requests.adapters import HTTPAdapter
+import matplotlib.pyplot as plt
+import base64
 from weasyprint import HTML
+
+# Force matplotlib to operate in a headless state to prevent thread crashing in web environments
+plt.switch_backend('Agg')
 
 # --- 1. APPLICATION CONFIGURATION & VISUAL STYLING ---
 st.set_page_config(
@@ -112,7 +117,7 @@ try:
     df_metrics, df_posts = load_all_data()
     st.sidebar.success("⚡ Live Database Sync Active")
 except Exception as e:
-    st.error(f"⚠️ Connection Mapping Breakpoint Encountered: {e}")
+    st.error(f"❌ Connection Mapping Breakpoint Encountered: {e}")
     st.stop()
 
 # Safely establish timelines while avoiding blanks
@@ -127,11 +132,40 @@ if not available_months:
     st.stop()
 
 selected_ym = st.sidebar.selectbox("📅 Reporting Horizon", available_months, format_func=lambda x: x.strftime('%B %Y'))
-# FIX: Moved from tab body to global sidebar to permanently eliminate tab-ghosting layout bugs
 selected_profile = st.sidebar.selectbox("🎯 Target Professional Focus", all_profiles_list)
 
 
-# --- 5. COMPREHENSIVE TEAM METRICS METRIC CALCULATOR ---
+# --- 5. GRAPH ENGINE BASE64 EXPORT UTILITY ---
+def export_plot_to_b64(df_source, column_name, chart_type='line', color='#0a66c2'):
+    """Generates a highly-stylized graphic element back into a flat HTML image token."""
+    if df_source.empty or column_name not in df_source.columns:
+        return ""
+    
+    fig, ax = plt.subplots(figsize=(5.5, 2.8), facecolor='#ffffff')
+    ax.set_facecolor('#ffffff')
+    
+    # Format axes parameters
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_color('#cbd5e1')
+    ax.spines['bottom'].set_color('#cbd5e1')
+    ax.tick_params(colors='#64748b', labelsize=8)
+    ax.grid(axis='y', linestyle='--', alpha=0.5, color='#e2e8f0')
+    
+    if chart_type == 'line':
+        ax.plot(df_source.index, df_source[column_name], color=color, linewidth=2, marker='o', markersize=3)
+    elif chart_type == 'bar':
+        ax.bar(df_source.index, df_source[column_name], color=color, alpha=0.85, width=0.6)
+        
+    plt.tight_layout()
+    img_buf = io.BytesIO()
+    fig.savefig(img_buf, format='png', bbox_inches='tight', dpi=150)
+    plt.close(fig)
+    img_buf.seek(0)
+    return f"data:image/png;base64,{base64.b64encode(img_buf.read()).decode('utf-8')}"
+
+
+# --- 6. COMPREHENSIVE TEAM METRICS METRIC CALCULATOR ---
 team_records = []
 for name in all_profiles_list:
     prof_df = df_metrics[df_metrics['Profile Name'] == name].sort_values('Date')
@@ -180,7 +214,7 @@ for name in all_profiles_list:
         st.session_state.manager_notes[name] = ""
 
 
-# --- 6. TOP-LEVEL DASHBOARD SYSTEM SEGMENTATION ---
+# --- 7. TOP-LEVEL DASHBOARD SYSTEM SEGMENTATION ---
 tab_team, tab_individual = st.tabs(["👥 Combined Team Overview", "🎯 Individual Profile Deep Dive"])
 
 
@@ -203,42 +237,82 @@ with tab_team:
                     key=f"team_notes_{name}"
                 )
                 
-    def generate_team_progress_pdf(df_source):
+    def generate_team_progress_pdf(df_source, trends_df):
         html_template = """
         <!DOCTYPE html><html><head><meta charset='utf-8'><style>
-            @page { size: A4 landscape; margin: 12mm; background-color: #fafbfc; }
+            @page { size: A4 landscape; margin: 10mm; background-color: #fafbfc; }
             body { font-family: sans-serif; color: #1e293b; font-size: 8.5pt; line-height: 1.4; }
-            .header { background: #0f172a; color: white; padding: 15px 20px; border-radius: 6px; margin-bottom: 15px; }
-            h1 { margin: 0; font-size: 16pt; } .subtitle { margin: 3px 0 0 0; color: #94a3b8; }
-            table { width: 100%; border-collapse: collapse; margin-top: 10px; background: white; }
-            th { background: #1e3a8a; color: white; text-align: left; padding: 8px 10px; font-size: 8.5pt; font-weight: 600; border: 1px solid #cbd5e1; }
-            td { padding: 8px 10px; border: 1px solid #e2e8f0; vertical-align: top; }
+            .header { background: #0f172a; color: white; padding: 15px 20px; border-radius: 6px; margin-bottom: 12px; }
+            h1 { margin: 0; font-size: 15pt; } .subtitle { margin: 2px 0 0 0; color: #94a3b8; }
+            table { width: 100%; border-collapse: collapse; margin-top: 10px; background: white; page-break-inside: avoid; }
+            th { background: #1e3a8a; color: white; text-align: left; padding: 7px 9px; font-size: 8.5pt; font-weight: 600; border: 1px solid #cbd5e1; }
+            td { padding: 7px 9px; border: 1px solid #e2e8f0; vertical-align: top; }
             tr:nth-child(even) { background: #f8fafc; }
-            .section-lbl { font-size: 7.5pt; text-transform: uppercase; color: #64748b; font-weight: bold; display: block; margin-bottom: 2px; }
-            .note-box { background-color: #f1f5f9; padding: 6px; border-left: 3px solid #0a66c2; font-style: italic; margin-top: 4px; border-radius: 2px; font-size: 8pt; }
+            .section-lbl { font-size: 7.5pt; text-transform: uppercase; color: #64748b; font-weight: bold; display: block; margin-bottom: 1px; }
+            .note-box { background-color: #f1f5f9; padding: 5px; border-left: 3px solid #0a66c2; font-style: italic; margin-top: 3px; border-radius: 2px; font-size: 8pt; }
             .pos { color: #16a34a; font-weight: bold; } .neg { color: #dc2626; font-weight: bold; }
+            .grid-table { width: 100%; border-collapse: collapse; margin-top: 15px; background: transparent; }
+            .grid-table td { border: none; padding: 6px; width: 50%; }
+            .chart-card { background: white; border: 1px solid #cbd5e1; padding: 8px; border-radius: 4px; text-align: center; }
+            .chart-title { font-size: 8.5pt; font-weight: bold; color: #334155; margin-bottom: 4px; text-align: left; }
+            .page-break { page-break-before: always; }
         </style></head><body>
             <div class='header'>
                 <h1>Executive Portfolio Progress Report</h1>
                 <p class='subtitle'>Combined Standings Tracker & Performance Horizons Index — __HORIZON__</p>
             </div>
-            <div style='display: table; width: 100%; margin-bottom: 15px;'>
-                <div style='display: table-cell; background: white; border: 1px solid #cbd5e1; padding: 10px; text-align: center;'><strong>Total Reach:</strong> __TOTAL_REACH__</div>
-                <div style='display: table-cell; background: white; border: 1px solid #cbd5e1; padding: 10px; text-align: center; border-left:none;'><strong>Total Output:</strong> __TOTAL_POSTS__ Posts</div>
-                <div style='display: table-cell; background: white; border: 1px solid #cbd5e1; padding: 10px; text-align: center; border-left:none;'><strong>Average Portfolio SSI:</strong> __AVG_SSI__</div>
+            <div style='display: table; width: 100%; margin-bottom: 12px;'>
+                <div style='display: table-cell; background: white; border: 1px solid #cbd5e1; padding: 10px; text-align: center;'><strong>Total Follower Count:</strong> __TOTAL_REACH__</div>
+                <div style='display: table-cell; background: white; border: 1px solid #cbd5e1; padding: 10px; text-align: center; border-left:none;'><strong>Average SSI Score:</strong> __AVG_SSI__</div>
+                <div style='display: table-cell; background: white; border: 1px solid #cbd5e1; padding: 10px; text-align: center; border-left:none;'><strong>Total Pool Content Output:</strong> __TOTAL_POSTS__ Posts</div>
             </div>
             <table>
                 <thead>
                     <tr>
-                        <th style="width: 15%;">Executive Name & Title</th>
+                        <th style="width: 14%;">Executive Name & Title</th>
                         <th style="width: 18%;">Follower Growth Progress</th>
                         <th style="width: 18%;">SSI Index Progress</th>
                         <th style="width: 10%;">Posts Published</th>
-                        <th style="width: 14%;">Views & Appearances</th>
+                        <th style="width: 15%;">Views & Appearances</th>
                         <th style="width: 25%;">Manager Performance Summary</th>
                     </tr>
                 </thead>
                 <tbody>__ROWS__</tbody>
+            </table>
+
+            <div class="page-break"></div>
+            <div class='header'>
+                <h1>📊 Combined Team Macro-Trend Vectors (All-Time History)</h1>
+            </div>
+            <table class='grid-table'>
+                <tr>
+                    <td>
+                        <div class='chart-card'>
+                            <div class='chart-title'>👥 Combined Follower Growth</div>
+                            <img src='__IMG_FOL__' style='width: 100%; height: auto;'>
+                        </div>
+                    </td>
+                    <td>
+                        <div class='chart-card'>
+                            <div class='chart-title'>👀 Combined Profile Views</div>
+                            <img src='__IMG_VIEWS__' style='width: 100%; height: auto;'>
+                        </div>
+                    </td>
+                </tr>
+                <tr>
+                    <td>
+                        <div class='chart-card'>
+                            <div class='chart-title'>🔍 Combined Platform-Wide Visibility</div>
+                            <img src='__IMG_APP__' style='width: 100%; height: auto;'>
+                        </div>
+                    </td>
+                    <td>
+                        <div class='chart-card'>
+                            <div class='chart-title'>📈 Rolling Average Social Selling Index (SSI)</div>
+                            <img src='__IMG_SSI__' style='width: 100%; height: auto;'>
+                        </div>
+                    </td>
+                </tr>
             </table>
         </body></html>
         """
@@ -274,19 +348,37 @@ with tab_team:
             </tr>
             """
         
+        # Render trend image snapshots for the PDF document
+        b64_fol = export_plot_to_b64(trends_df, 'Total followers', 'line', '#0a66c2')
+        b64_views = export_plot_to_b64(trends_df, 'Profile views', 'line', '#1db954')
+        b64_app = export_plot_to_b64(trends_df, 'Appearances', 'line', '#ff9900')
+        b64_ssi = export_plot_to_b64(trends_df, 'SSI', 'line', '#bit-dc2626')
+        
         final_html = html_template.replace("__ROWS__", rows_html)\
                                   .replace("__HORIZON__", selected_ym.strftime('%B %Y'))\
                                   .replace("__TOTAL_REACH__", f"{df_source['Followers'].sum():,}")\
                                   .replace("__TOTAL_POSTS__", f"{df_source['Posts Published'].sum()}")\
-                                  .replace("__AVG_SSI__", f"{int(df_source['SSI'].mean())}/100")
+                                  .replace("__AVG_SSI__", f"{int(df_source['SSI'].mean())}/100")\
+                                  .replace("__IMG_FOL__", b64_fol)\
+                                  .replace("__IMG_VIEWS__", b64_views)\
+                                  .replace("__IMG_APP__", b64_app)\
+                                  .replace("__IMG_SSI__", b64_ssi)
                                   
         buf = io.BytesIO()
         HTML(string=final_html).write_pdf(buf)
         return buf.getvalue()
 
 
+    # Compile multi-profile timelines grouped securely by date stamps
+    team_trends_df = df_metrics.groupby('Date').agg({
+        'Total followers': 'sum',
+        'Profile views': 'sum',
+        'Appearances': 'sum',
+        'SSI': 'mean'
+    }).sort_index()
+
     try:
-        team_report_bytes = generate_team_progress_pdf(df_team_standings)
+        team_report_bytes = generate_team_progress_pdf(df_team_standings, team_trends_df)
         st.download_button(
             label="📥 Export Executive Portfolio Progress PDF",
             data=team_report_bytes,
@@ -307,25 +399,15 @@ with tab_team:
     st.markdown("---")
     st.subheader("📊 Combined Team Macro-Trend Vectors (All-Time History)")
     
-    team_trends_df = df_metrics.groupby('Date').agg({
-        'Total followers': 'sum',
-        'Profile views': 'sum',
-        'Appearances': 'sum',
-        'SSI': 'mean'
-    }).sort_index()
-    
     tc1, tc2 = st.columns(2)
     with tc1:
         st.caption("👥 Combined Follower Growth")
         st.line_chart(team_trends_df[['Total followers']], color="#0a66c2")
-        
         st.caption("🔍 Combined Platform-Wide Visibility")
         st.line_chart(team_trends_df[['Appearances']], color="#ff9900")
-        
     with tc2:
         st.caption("👀 Combined Profile Views")
         st.line_chart(team_trends_df[['Profile views']], color="#1db954")
-        
         st.caption("📈 Rolling Average Social Selling Index (SSI)")
         st.line_chart(team_trends_df[['SSI']], color="#dc2626")
 
@@ -345,7 +427,6 @@ with tab_team:
 # 🎯 TAB 2: INDIVIDUAL PROFILE DEEP DIVE
 # ==========================================
 with tab_individual:
-    # Safely extract records matching global sidebar state variables
     prof_row = df_team_standings[df_team_standings['Profile Name'] == selected_profile].iloc[0]
     profile_metrics = df_metrics[df_metrics['Profile Name'] == selected_profile].sort_values('Date')
     current_month_data = profile_metrics[profile_metrics['YearMonth'] == selected_ym]
@@ -362,17 +443,22 @@ with tab_individual:
             key=f"ind_notes_{selected_profile}"
         )
         
-        def generate_single_progress_pdf():
+        def generate_single_progress_pdf(hist_metrics, content_df):
             html_template = """
             <!DOCTYPE html><html><head><meta charset='utf-8'><style>
-                @page { size: A4; margin: 20mm 15mm; background-color: #f8fafc; }
-                body { font-family: Arial, sans-serif; color: #1e293b; font-size: 10pt; line-height: 1.5; }
-                .header { background: #1e3a8a; color: white; padding: 20px; border-radius: 6px; margin-bottom: 20px; }
-                h1 { margin: 0; font-size: 18pt; } .title { color: #bfdbfe; margin: 2px 0 0 0; }
-                .card { background: white; padding: 16px; border: 1px solid #e2e8f0; border-top: 4px solid #2563eb; margin-bottom: 15px; border-radius: 4px; }
-                .val { font-size: 22pt; font-weight: bold; color: #0f172a; margin-bottom: 5px; }
+                @page { size: A4; margin: 15mm 15mm; background-color: #f8fafc; }
+                body { font-family: Arial, sans-serif; color: #1e293b; font-size: 9.5pt; line-height: 1.4; }
+                .header { background: #1e3a8a; color: white; padding: 18px; border-radius: 6px; margin-bottom: 15px; }
+                h1 { margin: 0; font-size: 16pt; } .title { color: #bfdbfe; margin: 2px 0 0 0; font-size: 10pt; }
+                .card { background: white; padding: 12px 16px; border: 1px solid #e2e8f0; border-top: 4px solid #2563eb; margin-bottom: 12px; border-radius: 4px; page-break-inside: avoid; }
+                .val { font-size: 20pt; font-weight: bold; color: #0f172a; margin-bottom: 2px; }
                 .pos { color: #16a34a; font-weight: bold; } .neg { color: #dc2626; font-weight: bold; }
-                .notes-block { background-color: #f1f5f9; padding: 15px; border-left: 4px solid #0a66c2; border-radius: 4px; margin-top: 20px; }
+                .notes-block { background-color: #f1f5f9; padding: 12px; border-left: 4px solid #0a66c2; border-radius: 4px; margin-top: 10px; font-style: italic; }
+                .grid-table { width: 100%; border-collapse: collapse; background: transparent; page-break-inside: avoid; }
+                .grid-table td { border: none; padding: 5px; width: 50%; }
+                .chart-card { background: white; border: 1px solid #cbd5e1; padding: 6px; border-radius: 4px; text-align: center; }
+                .chart-title { font-size: 8pt; font-weight: bold; color: #475569; margin-bottom: 3px; text-align: left; }
+                .page-break { page-break-before: always; }
             </style></head><body>
                 <div class='header'>
                     <h1>__NAME__</h1>
@@ -396,8 +482,44 @@ with tab_individual:
                     • Profile Discovery Views: <strong>__VIEWS__</strong><br>
                     • Search Appearances Indexes: <strong>__APP__</strong>
                 </div>
+                
                 <h2>Manager Commentary & Tactical Alignment</h2>
                 <div class='notes-block'>__COMMENTARY__</div>
+
+                <div class="page-break"></div>
+                <div class='header'><h1>📊 Core Strategic Performance Vectors (All-Time History)</h1></div>
+                <table class='grid-table'>
+                    <tr>
+                        <td>
+                            <div class='chart-card'>
+                                <div class='chart-title'>📈 Total Followers</div>
+                                <img src='__CHART_FOL__' style='width:100%; height:auto;'>
+                            </div>
+                        </td>
+                        <td>
+                            <div class='chart-card'>
+                                <div class='chart-title'>🛡️ Social Selling Index (SSI) Tracker</div>
+                                <img src='__CHART_SSI__' style='width:100%; height:auto;'>
+                            </div>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>
+                            <div class='chart-card'>
+                                <div class='chart-title'>🔍 Platform-Wide Profile Appearances</div>
+                                <img src='__CHART_APP__' style='width:100%; height:auto;'>
+                            </div>
+                        </td>
+                        <td>
+                            <div class='chart-card'>
+                                <div class='chart-title'>👀 Profile Views</div>
+                                <img src='__CHART_VIEWS__' style='width:100%; height:auto;'>
+                            </div>
+                        </td>
+                    </tr>
+                </table>
+
+                __CONTENT_SECTION__
             </body></html>
             """
             txt = st.session_state.manager_notes.get(selected_profile, "").strip()
@@ -407,6 +529,41 @@ with tab_individual:
             s_mom_val = prof_row['SSI MoM Shift']
             s_inc_val = prof_row['SSI Inc Shift']
             
+            # Replicate 2x2 individual timeline charts
+            b64_ind_fol = export_plot_to_b64(hist_metrics.set_index('Date'), 'Total followers', 'line', '#0a66c2')
+            b64_ind_ssi = export_plot_to_b64(hist_metrics.set_index('Date'), 'SSI', 'line', '#dc2626')
+            b64_ind_app = export_plot_to_b64(hist_metrics.set_index('Date'), 'Appearances', 'line', '#ff9900')
+            b64_ind_views = export_plot_to_b64(hist_metrics.set_index('Date'), 'Profile views', 'line', '#1db954')
+            
+            content_section_html = ""
+            if not content_df.empty:
+                monthly_posts_perf = content_df.groupby('YearMonth').agg({'Impressions': 'sum', 'Engagement': 'sum'}).sort_index()
+                monthly_posts_perf.index = monthly_posts_perf.index.astype(str)
+                
+                b64_post_imp = export_plot_to_b64(monthly_posts_perf, 'Impressions', 'bar', '#0a66c2')
+                b64_post_eng = export_plot_to_b64(monthly_posts_perf, 'Engagement', 'bar', '#1db954')
+                
+                content_section_html = f"""
+                <div class="page-break"></div>
+                <div class='header'><h1>📝 Monthly Content Performance Logs (Historical Vectors)</h1></div>
+                <table class='grid-table'>
+                    <tr>
+                        <td>
+                            <div class='chart-card'>
+                                <div class='chart-title'>📈 Total Organic Post Impressions by Calendar Month</div>
+                                <img src='{b64_post_imp}' style='width:100%; height:auto;'>
+                            </div>
+                        </td>
+                        <td>
+                            <div class='chart-card'>
+                                <div class='chart-title'>❤️ Total Post Engagement Interactions by Calendar Month</div>
+                                <img src='{b64_post_eng}' style='width:100%; height:auto;'>
+                            </div>
+                        </td>
+                    </tr>
+                </table>
+                """
+
             f_html = html_template.replace('__NAME__', selected_profile)\
                                   .replace('__TITLE__', prof_row['Job Title'])\
                                   .replace('__MONTH__', selected_ym.strftime('%B %Y'))\
@@ -422,14 +579,41 @@ with tab_individual:
                                   .replace('__POSTS__', f"{int(prof_row['Posts Published'])}")\
                                   .replace('__VIEWS__', f"{int(prof_row['Views']):,}")\
                                   .replace('__APP__', f"{int(prof_row['Appearances']):,}")\
-                                  .replace('__COMMENTARY__', comment_html)
+                                  .replace('__COMMENTARY__', comment_html)\
+                                  .replace('__CHART_FOL__', '')\
+                                  .replace('__POSTS__', f"{int(prof_row['Posts Published'])}")\
+                                  .replace('__VIEWS__', f"{int(prof_row['Views']):,}")\
+                                  .replace('__APP__', f"{int(prof_row['Appearances']):,}")\
+                                  .replace('__COMMENTARY__', comment_html)\
+                                  .replace('__CHART_FOL__', '')\
+                                  .replace('__ROWS__', '')\
+                                  .replace('__TOTAL_REACH__', '')\
+                                  .replace('__TOTAL_POSTS__', '')\
+                                  .replace('__AVG_SSI__', '')\
+                                  .replace('__IMG_FOL__', '')\
+                                  .replace('__IMG_VIEWS__', '')\
+                                  .replace('__IMG_APP__', '')\
+                                  .replace('__IMG_SSI__', '')\
+                                  .replace('__CHART_SSI__', '')\
+                                  .replace('__CHART_APP__', '')\
+                                  .replace('__CHART_VIEWS__', '')\
+                                  .replace('__CHART_IMP__', '')\
+                                  .replace('__CHART_ENG__', '')
+            
+            # Direct text tokens mapping adjustments
+            f_html = f_html.replace('__CHART_FOL__', b64_ind_fol)\
+                           .replace('__CHART_SSI__', b64_ind_ssi)\
+                           .replace('__CHART_APP__', b64_ind_app)\
+                           .replace('__CHART_VIEWS__', b64_ind_views)\
+                           .replace('__CONTENT_SECTION__', content_section_html)
                                   
             buf = io.BytesIO()
             HTML(string=f_html).write_pdf(buf)
             return buf.getvalue()
 
         try:
-            single_pdf_bytes = generate_single_progress_pdf()
+            individual_posts = df_posts[df_posts['Profile Name'] == selected_profile].copy()
+            single_pdf_bytes = generate_single_progress_pdf(profile_metrics, individual_posts)
             st.download_button(
                 label=f"📥 Download {selected_profile}'s Monthly PDF Brief",
                 data=single_pdf_bytes,
@@ -455,14 +639,11 @@ with tab_individual:
         with ic1:
             st.caption("📈 Total Followers")
             st.line_chart(profile_metrics.set_index('Date')[['Total followers']], color="#0a66c2")
-            
             st.caption("🔍 Platform-Wide Profile Appearances")
             st.line_chart(profile_metrics.set_index('Date')[['Appearances']], color="#ff9900")
-            
         with ic2:
             st.caption("🛡️ Social Selling Index (SSI) Tracker")
             st.line_chart(profile_metrics.set_index('Date')[['SSI']], color="#dc2626")
-            
             st.caption("👀 Profile Views")
             st.line_chart(profile_metrics.set_index('Date')[['Profile views']], color="#1db954")
             
