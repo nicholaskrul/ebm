@@ -348,11 +348,11 @@ with tab_team:
             </tr>
             """
         
-        # Render trend image snapshots for the PDF document
+        # FIX: Swapped '#bit-dc2626' typo to clean valid hex value '#dc2626'
         b64_fol = export_plot_to_b64(trends_df, 'Total followers', 'line', '#0a66c2')
         b64_views = export_plot_to_b64(trends_df, 'Profile views', 'line', '#1db954')
         b64_app = export_plot_to_b64(trends_df, 'Appearances', 'line', '#ff9900')
-        b64_ssi = export_plot_to_b64(trends_df, 'SSI', 'line', '#bit-dc2626')
+        b64_ssi = export_plot_to_b64(trends_df, 'SSI', 'line', '#dc2626')
         
         final_html = html_template.replace("__ROWS__", rows_html)\
                                   .replace("__HORIZON__", selected_ym.strftime('%B %Y'))\
@@ -427,6 +427,7 @@ with tab_team:
 # 🎯 TAB 2: INDIVIDUAL PROFILE DEEP DIVE
 # ==========================================
 with tab_individual:
+    # Safely extract records matching global sidebar state variables
     prof_row = df_team_standings[df_team_standings['Profile Name'] == selected_profile].iloc[0]
     profile_metrics = df_metrics[df_metrics['Profile Name'] == selected_profile].sort_values('Date')
     current_month_data = profile_metrics[profile_metrics['YearMonth'] == selected_ym]
@@ -447,13 +448,13 @@ with tab_individual:
             html_template = """
             <!DOCTYPE html><html><head><meta charset='utf-8'><style>
                 @page { size: A4; margin: 15mm 15mm; background-color: #f8fafc; }
-                body { font-family: Arial, sans-serif; color: #1e293b; font-size: 9.5pt; line-height: 1.4; }
-                .header { background: #1e3a8a; color: white; padding: 18px; border-radius: 6px; margin-bottom: 15px; }
-                h1 { margin: 0; font-size: 16pt; } .title { color: #bfdbfe; margin: 2px 0 0 0; font-size: 10pt; }
-                .card { background: white; padding: 12px 16px; border: 1px solid #e2e8f0; border-top: 4px solid #2563eb; margin-bottom: 12px; border-radius: 4px; page-break-inside: avoid; }
-                .val { font-size: 20pt; font-weight: bold; color: #0f172a; margin-bottom: 2px; }
+                body { font-family: Arial, sans-serif; color: #1e293b; font-size: 10pt; line-height: 1.5; }
+                .header { background: #1e3a8a; color: white; padding: 20px; border-radius: 6px; margin-bottom: 20px; }
+                h1 { margin: 0; font-size: 18pt; } .title { color: #bfdbfe; margin: 2px 0 0 0; }
+                .card { background: white; padding: 16px; border: 1px solid #e2e8f0; border-top: 4px solid #2563eb; margin-bottom: 15px; border-radius: 4px; }
+                .val { font-size: 22pt; font-weight: bold; color: #0f172a; margin-bottom: 5px; }
                 .pos { color: #16a34a; font-weight: bold; } .neg { color: #dc2626; font-weight: bold; }
-                .notes-block { background-color: #f1f5f9; padding: 12px; border-left: 4px solid #0a66c2; border-radius: 4px; margin-top: 10px; font-style: italic; }
+                .notes-block { background-color: #f1f5f9; padding: 15px; border-left: 4px solid #0a66c2; border-radius: 4px; margin-top: 20px; }
                 .grid-table { width: 100%; border-collapse: collapse; background: transparent; page-break-inside: avoid; }
                 .grid-table td { border: none; padding: 5px; width: 50%; }
                 .chart-card { background: white; border: 1px solid #cbd5e1; padding: 6px; border-radius: 4px; text-align: center; }
@@ -482,7 +483,6 @@ with tab_individual:
                     • Profile Discovery Views: <strong>__VIEWS__</strong><br>
                     • Search Appearances Indexes: <strong>__APP__</strong>
                 </div>
-                
                 <h2>Manager Commentary & Tactical Alignment</h2>
                 <div class='notes-block'>__COMMENTARY__</div>
 
@@ -564,6 +564,7 @@ with tab_individual:
                 </table>
                 """
 
+            # Pristine structured variable parsing block
             f_html = html_template.replace('__NAME__', selected_profile)\
                                   .replace('__TITLE__', prof_row['Job Title'])\
                                   .replace('__MONTH__', selected_ym.strftime('%B %Y'))\
@@ -580,32 +581,11 @@ with tab_individual:
                                   .replace('__VIEWS__', f"{int(prof_row['Views']):,}")\
                                   .replace('__APP__', f"{int(prof_row['Appearances']):,}")\
                                   .replace('__COMMENTARY__', comment_html)\
-                                  .replace('__CHART_FOL__', '')\
-                                  .replace('__POSTS__', f"{int(prof_row['Posts Published'])}")\
-                                  .replace('__VIEWS__', f"{int(prof_row['Views']):,}")\
-                                  .replace('__APP__', f"{int(prof_row['Appearances']):,}")\
-                                  .replace('__COMMENTARY__', comment_html)\
-                                  .replace('__CHART_FOL__', '')\
-                                  .replace('__ROWS__', '')\
-                                  .replace('__TOTAL_REACH__', '')\
-                                  .replace('__TOTAL_POSTS__', '')\
-                                  .replace('__AVG_SSI__', '')\
-                                  .replace('__IMG_FOL__', '')\
-                                  .replace('__IMG_VIEWS__', '')\
-                                  .replace('__IMG_APP__', '')\
-                                  .replace('__IMG_SSI__', '')\
-                                  .replace('__CHART_SSI__', '')\
-                                  .replace('__CHART_APP__', '')\
-                                  .replace('__CHART_VIEWS__', '')\
-                                  .replace('__CHART_IMP__', '')\
-                                  .replace('__CHART_ENG__', '')
-            
-            # Direct text tokens mapping adjustments
-            f_html = f_html.replace('__CHART_FOL__', b64_ind_fol)\
-                           .replace('__CHART_SSI__', b64_ind_ssi)\
-                           .replace('__CHART_APP__', b64_ind_app)\
-                           .replace('__CHART_VIEWS__', b64_ind_views)\
-                           .replace('__CONTENT_SECTION__', content_section_html)
+                                  .replace('__CHART_FOL__', b64_ind_fol)\
+                                  .replace('__CHART_SSI__', b64_ind_ssi)\
+                                  .replace('__CHART_APP__', b64_ind_app)\
+                                  .replace('__CHART_VIEWS__', b64_ind_views)\
+                                  .replace('__CONTENT_SECTION__', content_section_html)
                                   
             buf = io.BytesIO()
             HTML(string=f_html).write_pdf(buf)
