@@ -440,7 +440,6 @@ def generate_team_progress_pdf(df_source, trends_df, manager_notes, horizon_str)
         </tr>
         """
     
-    # Flatten timelines to avoid duplicate timeline crashes inside the group generator
     hist_metrics_clean = trends_df.groupby(level=0).last() if isinstance(trends_df.index, pd.MultiIndex) else trends_df.groupby(trends_df.index).last()
 
     b64_fol = export_plot_to_b64(hist_metrics_clean, 'Total followers', 'line', '#0a66c2')
@@ -463,7 +462,7 @@ def generate_team_progress_pdf(df_source, trends_df, manager_notes, horizon_str)
     return buf.getvalue()
 
 
-def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, selected_profile, job_title_str, horizon_str, f_curr, f_mom, f_inc, s_curr, s_mom, s_inc, posts_count, views_count, app_count, avg_dm_reach, accounts_str, industries_str, total_high_intent):
+def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, selected_profile, job_title_str, horizon_str, f_curr, f_mom, f_inc, s_curr, s_mom, s_inc, posts_count, views_count, app_count, avg_dm_reach, accounts_str, industries_str, total_high_intent, b64_reach_pct, b64_members_reached, b64_eng_rate):
     html_template = """
     <!DOCTYPE html><html><head><meta charset='utf-8'><style>
         @page { size: A4; margin: 15mm 15mm; background-color: #f8fafc; }
@@ -548,11 +547,10 @@ def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, se
         </table>
 
         __CONTENT_SECTION__
+        __INDIVIDUAL_POSTS_SECTION__
     </body></html>
     """
     comment_html = manager_notes_str.replace("\n", "<br>") if manager_notes_str else "<em>No remarks logged.</em>"
-    
-    # Flatten timelines defensively to isolate the charting canvas
     hist_metrics_clean = hist_metrics.groupby('Date').last()
 
     b64_ind_fol = export_plot_to_b64(hist_metrics_clean, 'Total followers', 'line', '#0a66c2')
@@ -588,6 +586,40 @@ def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, se
         </table>
         """
 
+    # NEW: Dynamically build out the single-post granular report page inside the document layout
+    ind_posts_section_html = ""
+    if b64_reach_pct and b64_members_reached and b64_eng_rate:
+        ind_posts_section_html = f"""
+        <div class="page-break"></div>
+        <div class='header'><h1>📊 Single-Post Performance Breakdown (Current Month)</h1></div>
+        <table class='grid-table'>
+            <tr>
+                <td>
+                    <div class='chart-card'>
+                        <div class='chart-title'>🎯 Organic Reach % (Impressions / Total Followers)</div>
+                        <img src='{b64_reach_pct}' style='width:100%; height:auto;'>
+                    </div>
+                </td>
+                <td>
+                    <div class='chart-card'>
+                        <div class='chart-title'>👥 Unique Members Reached</div>
+                        <img src='{b64_members_reached}' style='width:100%; height:auto;'>
+                    </div>
+                </td>
+            </tr>
+        </table>
+        <table class='grid-table' style='margin-top: 15px;'>
+            <tr>
+                <td style='width: 100%;'>
+                    <div class='chart-card'>
+                        <div class='chart-title'>⚡ Engagement Rate % (Total Engagement / Impressions)</div>
+                        <img src='{b64_eng_rate}' style='width:100%; height:auto;'>
+                    </div>
+                </td>
+            </tr>
+        </table>
+        """
+
     f_html = html_template.replace('__NAME__', selected_profile)\
                           .replace('__TITLE__', job_title_str)\
                           .replace('__MONTH__', horizon_str)\
@@ -612,7 +644,8 @@ def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, se
                           .replace('__CHART_SSI__', b64_ind_ssi)\
                           .replace('__CHART_APP__', b64_ind_app)\
                           .replace('__CHART_VIEWS__', b64_ind_views)\
-                          .replace('__CONTENT_SECTION__', content_section_html)
+                          .replace('__CONTENT_SECTION__', content_section_html)\
+                          .replace('__INDIVIDUAL_POSTS_SECTION__', ind_posts_section_html)
 
     buf = io.BytesIO()
     HTML(string=f_html).write_pdf(buf)
@@ -743,7 +776,7 @@ with tab_team:
 
     st.markdown("---")
     st.markdown("### 📋 Detailed Cross-Profile Leaderboard")
-    display_team_df = df_team_standings.copy()
+    display_team_df = display_team_df = df_team_standings.copy()
     display_team_df['Manager Remarks'] = display_team_df['Profile Name'].map(lambda x: st.session_state.manager_notes.get(x, ""))
     st.dataframe(
         display_team_df.set_index('Profile Name')[
@@ -767,21 +800,36 @@ with tab_individual:
         current_month_data = profile_metrics[profile_metrics['YearMonth'] == selected_ym]
 
         individual_posts = df_posts[df_posts['Profile Name'] == selected_profile].copy()
-        # FIX: Direct slicing preserves schema columns even if empty, preventing downstream KeyErrors
         month_posts = individual_posts[individual_posts['YearMonth'] == selected_ym]
 
         avg_dm_reach = month_posts['Decision-Maker Reach %'].mean() * 100 if not month_posts.empty and 'Decision-Maker Reach %' in month_posts.columns else 0.0
         total_saves = month_posts['Saves'].sum() if not month_posts.empty and 'Saves' in month_posts.columns else 0
         total_sends = month_posts['Sends on LinkedIn'].sum() if not month_posts.empty and 'Sends on LinkedIn' in month_posts.columns else 0
-        total_reposts = month_posts['Reposts'].sum() if not month_posts.empty and 'Reposts' in month_posts.columns else 0 # Resolved stray word syntax exception
+        total_reposts = month_posts['Reposts'].sum() if not month_posts.empty and 'Reposts' in month_posts.columns else 0 
         total_high_intent = total_saves + total_sends + total_reposts
 
-        # Implemented complete column confirmation checks to prevent empty list slicing crashes
         accounts_seen = [str(x) for x in month_posts['Top Target Accounts'].dropna().unique() if str(x) != ""] if 'Top Target Accounts' in month_posts.columns else []
         accounts_summary_str = ", ".join(accounts_seen)[:100] if accounts_seen else "No corporate target tracking entries logged."
 
         industries_seen = [str(x) for x in month_posts['Top Core Industries'].dropna().unique() if str(x) != ""] if 'Top Core Industries' in month_posts.columns else []
         industries_summary_str = ", ".join(industries_seen)[:100] if industries_seen else "No industrial tracking profiles mapped."
+
+        # NEW: Compute math layers per post inside this horizon for the PDF asset compiler
+        b64_reach_pct, b64_members_reached, b64_eng_rate = "", "", ""
+        if not month_posts.empty:
+            pdf_plot_df = month_posts.copy().sort_values('Publish Date')
+            pdf_plot_df['Post Label'] = pdf_plot_df['Publish Date'].dt.strftime('%m-%d') + " - " + pdf_plot_df['Topic'].str.slice(0, 12)
+            pdf_plot_df = pdf_plot_df.set_index('Post Label')
+            
+            pdf_plot_df['Engagement Rate (%)'] = pdf_plot_df.apply(
+                lambda r: (r['Engagement'] / r['Impressions'] * 100) if r['Impressions'] > 0 else 0.0, axis=1
+            )
+            denom_f = float(prof_row['Followers']) if float(prof_row['Followers']) > 0 else 1.0
+            pdf_plot_df['Reach (%)'] = (pdf_plot_df['Impressions'] / denom_f) * 100
+            
+            b64_reach_pct = export_plot_to_b64(pdf_plot_df, 'Reach (%)', 'bar', '#0a66c2')
+            b64_members_reached = export_plot_to_b64(pdf_plot_df, 'Members Reached', 'bar', '#ff9900')
+            b64_eng_rate = export_plot_to_b64(pdf_plot_df, 'Engagement Rate (%)', 'bar', '#1db954')
 
         st.subheader(f"📈 Strategic Progress Breakdown: {selected_profile}")
         st.markdown("---")
@@ -805,7 +853,8 @@ with tab_individual:
                         prof_row['Followers'], prof_row['Followers MoM%'], prof_row['Followers Inc Growth'],
                         prof_row['SSI'], prof_row['SSI MoM Shift'], prof_row['SSI Inc Shift'],
                         prof_row['Posts Published'], prof_row['Views'], prof_row['Appearances'],
-                        avg_dm_reach, accounts_summary_str, industries_summary_str, total_high_intent
+                        avg_dm_reach, accounts_summary_str, industries_summary_str, total_high_intent,
+                        b64_reach_pct, b64_members_reached, b64_eng_rate # Injected new visual strings
                     )
                     st.session_state[f"compiled_single_pdf_{selected_profile}"] = single_pdf_bytes
                     st.success("✨ Dossier completed successfully!")
@@ -839,7 +888,6 @@ with tab_individual:
             st.markdown("---")
             st.subheader("📊 Core Strategic Performance Vectors (All-Time History)")
 
-            # Upgraded trend line calculations using grouped index metrics to bypass timeline crashes
             profile_metrics_clean = profile_metrics.groupby('Date').last()
 
             ic1, ic2 = st.columns(2)
@@ -872,6 +920,22 @@ with tab_individual:
                 with pc2:
                     st.caption("❤️ Total Post Engagement Interactions by Calendar Month")
                     st.bar_chart(monthly_posts_perf['Engagement'], color="#1db954")
+
+                # NEW: Interactive Single-Post Analytics UI Section
+                st.markdown("### 📊 Single-Post Performance Breakdown (Current Month)")
+                if not month_posts.empty:
+                    p_ch1, p_ch2, p_ch3 = st.columns(3)
+                    with p_ch1:
+                        st.caption("🎯 Organic Reach % per Post (Impressions / Followers)")
+                        st.bar_chart(pdf_plot_df['Reach (%)'], color="#0a66c2")
+                    with p_ch2:
+                        st.caption("👥 Unique Members Reached per Post")
+                        st.bar_chart(pdf_plot_df['Members Reached'], color="#ff9900")
+                    with p_ch3:
+                        st.caption("⚡ Engagement Rate % per Post (Engagement / Impressions)")
+                        st.bar_chart(pdf_plot_df['Engagement Rate (%)'], color="#1db954")
+                else:
+                    st.info("No organic analytics matching this month have been ingested to map per-post graphs.")
 
                 st.markdown("### 📋 Granular Post Performance Tracking")
                 if not month_posts.empty:
