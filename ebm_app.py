@@ -35,7 +35,7 @@ if "manager_notes" not in st.session_state:
 
 # --- 3. CREDENTIAL AUTHENTICATION & RATE LIMIT PROTECTION ---
 AIRTABLE_TOKEN = st.secrets.get("AIRTABLE_TOKEN")
-_ID = st.secrets.get("BASE_ID")
+BASE_ID = st.secrets.get("BASE_ID")
 
 if not AIRTABLE_TOKEN or not BASE_ID:
     st.error("❌ Configuration Missing! Define your `AIRTABLE_TOKEN` and `BASE_ID` inside your secret management dashboard.")
@@ -243,7 +243,7 @@ with tab_team:
             @page { size: A4 landscape; margin: 10mm; background-color: #fafbfc; }
             body { font-family: sans-serif; color: #1e293b; font-size: 8.5pt; line-height: 1.4; }
             .header { background: #0f172a; color: white; padding: 15px 20px; border-radius: 6px; margin-bottom: 12px; }
-            h1 { margin: 0; font-size: 15pt; } .subtitle { margin: 2px 0 0 0; color: #94a3b8; }
+            h1 { margin: 0; font-size: 16pt; } .subtitle { margin: 2px 0 0 0; color: #94a3b8; }
             table { width: 100%; border-collapse: collapse; margin-top: 10px; background: white; page-break-inside: avoid; }
             th { background: #1e3a8a; color: white; text-align: left; padding: 7px 9px; font-size: 8.5pt; font-weight: 600; border: 1px solid #cbd5e1; }
             td { padding: 7px 9px; border: 1px solid #e2e8f0; vertical-align: top; }
@@ -332,7 +332,7 @@ with tab_team:
                 <td>
                     <span class='section-lbl'>Total Followers:</span> <strong>{int(row['Followers']):,}</strong><br>
                     <span class='section-lbl'>Monthly:</span> <span class='{f_mom_cls}'>{row['Followers MoM%']:+.1f}% MoM</span><br>
-                    <span class='section-lbl'>Overall:</span> <span class='pos'>+{int(row['Followers Inc Growth']):,} since since inception</span>
+                    <span class='section-lbl'>Overall:</span> <span class='pos'>+{int(row['Followers Inc Growth']):,} since inception</span>
                 </td>
                 <td>
                     <span class='section-lbl'>Current Standing:</span> <strong>{int(row['SSI'])}/100</strong><br>
@@ -348,7 +348,6 @@ with tab_team:
             </tr>
             """
         
-        # FIX: Swapped '#bit-dc2626' typo to clean valid hex value '#dc2626'
         b64_fol = export_plot_to_b64(trends_df, 'Total followers', 'line', '#0a66c2')
         b64_views = export_plot_to_b64(trends_df, 'Profile views', 'line', '#1db954')
         b64_app = export_plot_to_b64(trends_df, 'Appearances', 'line', '#ff9900')
@@ -369,7 +368,6 @@ with tab_team:
         return buf.getvalue()
 
 
-    # Compile multi-profile timelines grouped securely by date stamps
     team_trends_df = df_metrics.groupby('Date').agg({
         'Total followers': 'sum',
         'Profile views': 'sum',
@@ -427,7 +425,6 @@ with tab_team:
 # 🎯 TAB 2: INDIVIDUAL PROFILE DEEP DIVE
 # ==========================================
 with tab_individual:
-    # Safely extract records matching global sidebar state variables
     prof_row = df_team_standings[df_team_standings['Profile Name'] == selected_profile].iloc[0]
     profile_metrics = df_metrics[df_metrics['Profile Name'] == selected_profile].sort_values('Date')
     current_month_data = profile_metrics[profile_metrics['YearMonth'] == selected_ym]
@@ -483,6 +480,7 @@ with tab_individual:
                     • Profile Discovery Views: <strong>__VIEWS__</strong><br>
                     • Search Appearances Indexes: <strong>__APP__</strong>
                 </div>
+                
                 <h2>Manager Commentary & Tactical Alignment</h2>
                 <div class='notes-block'>__COMMENTARY__</div>
 
@@ -529,7 +527,6 @@ with tab_individual:
             s_mom_val = prof_row['SSI MoM Shift']
             s_inc_val = prof_row['SSI Inc Shift']
             
-            # Replicate 2x2 individual timeline charts
             b64_ind_fol = export_plot_to_b64(hist_metrics.set_index('Date'), 'Total followers', 'line', '#0a66c2')
             b64_ind_ssi = export_plot_to_b64(hist_metrics.set_index('Date'), 'SSI', 'line', '#dc2626')
             b64_ind_app = export_plot_to_b64(hist_metrics.set_index('Date'), 'Appearances', 'line', '#ff9900')
@@ -564,7 +561,6 @@ with tab_individual:
                 </table>
                 """
 
-            # Pristine structured variable parsing block
             f_html = html_template.replace('__NAME__', selected_profile)\
                                   .replace('__TITLE__', prof_row['Job Title'])\
                                   .replace('__MONTH__', selected_ym.strftime('%B %Y'))\
