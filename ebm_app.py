@@ -392,7 +392,7 @@ with tab_team:
         b64_fol = export_plot_to_b64(trends_df, 'Total followers', 'line', '#0a66c2')
         b64_views = export_plot_to_b64(trends_df, 'Profile views', 'line', '#1db954')
         b64_app = export_plot_to_b64(trends_df, 'Appearances', 'line', '#ff9900')
-        b64_ssi = export_plot_to_b64(trends_df, 'SSI', 'line', '#get_ssi')
+        b64_ssi = export_plot_to_b64(trends_df, 'SSI', 'line', '#dc2626')  # Corrected valid hex color string
         
         final_html = html_template.replace("__ROWS__", rows_html)\
                                   .replace("__HORIZON__", selected_ym.strftime('%B %Y'))\
