@@ -28,8 +28,8 @@ st.markdown('''
 ''', unsafe_allow_html=True)
 
 # --- 2. CREDENTIAL AUTHENTICATION & RATE LIMIT PROTECTION ---
-api_key = st.secrets["airtable"]["api_key"]
-base_id = st.secrets["airtable"]["base_id"]
+AIRTABLE_TOKEN = st.secrets["airtable"]["api_key"]
+BASE_ID = st.secrets["airtable"]["base_id"]
 
 if not AIRTABLE_TOKEN or not BASE_ID:
     st.error("❌ Configuration Missing! Define your `AIRTABLE_TOKEN` and `BASE_ID` inside your secret management dashboard.")
