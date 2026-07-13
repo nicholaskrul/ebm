@@ -1,7 +1,10 @@
-pyairtable>=2.0.0
-requests>=2.31.0
-urllib3>=2.0.0
-matplotlib>=3.8.0
-weasyprint>=61.0
-pandas>=2.0.0
-openpyxl
+pyairtable==2.3.3
+requests==2.32.3
+urllib3==2.2.3
+matplotlib==3.8.4
+weasyprint==62.3
+pandas==2.2.2
+openpyxl==3.1.2
+numpy==1.26.4
+pyarrow==16.1.0
+streamlit==1.38.0
