@@ -11,21 +11,13 @@ from matplotlib.figure import Figure
 import base64
 from weasyprint import HTML
 
-# --- 1. APPLICATION CONFIGURATION & VISUAL STYLING ---
+# --- 1. APPLICATION CONFIGURATION ---
 st.set_page_config(
-    page_title="LinkedIn Executive Analytics",
+    page_title="Executive Portfolio Analytics Hub",
     page_icon="💼",
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
-st.markdown('''
-<style>
-    [data-testid="stMetricValue"] { font-size: 26px; font-weight: bold; }
-    [data-testid="stMetricDelta"] { font-size: 13px; }
-    .comment-box { border-left: 4px solid #0a66c2; padding-left: 15px; margin: 10px 0; background-color: #f4f6f9; padding: 10px; border-radius: 4px; }
-</style>
-''', unsafe_allow_html=True)
 
 # --- 2. CREDENTIAL AUTHENTICATION & RATE LIMIT PROTECTION ---
 AIRTABLE_TOKEN = st.secrets["airtable"]["api_key"]
@@ -35,7 +27,7 @@ if not AIRTABLE_TOKEN or not BASE_ID:
     st.error("❌ Configuration Missing! Define your `AIRTABLE_TOKEN` and `BASE_ID` inside your secret management dashboard.")
     st.stop()
 
-# Initialize the standard API client first
+# Initialize the standard API client
 api = Api(AIRTABLE_TOKEN)
 
 # Build an enterprise retry framework to completely bypass Airtable 5req/sec limits
@@ -46,7 +38,6 @@ retries = Retry(
     raise_on_status=True
 )
 
-# TimeoutHTTPAdapter forces every request to fail after a bounded time instead of hanging indefinitely
 class TimeoutHTTPAdapter(HTTPAdapter):
     def __init__(self, *args, timeout=30, **kwargs):
         self.timeout = timeout
@@ -56,32 +47,79 @@ class TimeoutHTTPAdapter(HTTPAdapter):
         kwargs.setdefault("timeout", self.timeout)
         return super().send(request, **kwargs)
 
-# Inject the rate-limit protector + timeout directly into pyairtable's built-in session object
+# Inject the rate-limit protector + timeout directly into pyairtable's session
 api.session.mount("https://", TimeoutHTTPAdapter(max_retries=retries, timeout=30))
 
-# Define your tables using the protected API instance
+# Define tables
+companies_table = api.table(BASE_ID, "Companies")
 profiles_table = api.table(BASE_ID, "Profiles")
 metrics_table = api.table(BASE_ID, "Weekly Metrics")
 posts_table = api.table(BASE_ID, "Posts and content")
 
 
-# --- 3. DATA RECONCILIATION & PIPELINE ENGINE ---
+# --- 3. DATA RECONCILIATION & PIPELINE ENGINE (Multi-Tenant Relational Resolver) ---
 @st.cache_data(ttl=600)
 def load_all_data():
+    raw_companies = companies_table.all()
     raw_profiles = profiles_table.all()
     raw_metrics = metrics_table.all()
     raw_posts = posts_table.all()
 
-    id_to_name = {r['id']: r['fields'].get('Full Name', 'Unknown') for r in raw_profiles}
-    id_to_title = {r['id']: r['fields'].get('Job Title', 'Executive') for r in raw_profiles}
+    # 1. Map Company IDs to metadata details
+    id_to_company = {}
+    for r in raw_companies:
+        fields = r['fields']
+        id_to_company[r['id']] = {
+            'Company Name': fields.get('Company Name', 'Unknown Company'),
+            'Brand Color': fields.get('Brand Color', '#0a66c2'),  # Default to LinkedIn Blue
+            'Logo URL': fields.get('Logo URL', '')
+        }
 
-    # Process Metrics Dataset
+    # 2. Map Profile IDs to Name, Title, and resolved Company metadata
+    profile_map = {}
+    for r in raw_profiles:
+        fields = r['fields']
+        p_id = r['id']
+        name = fields.get('Full Name', 'Unknown')
+        title = fields.get('Job Title', 'Executive')
+        
+        comp_links = fields.get('Company', [])
+        comp_id = comp_links[0] if comp_links else None
+        
+        comp_info = id_to_company.get(comp_id, {
+            'Company Name': 'Unassigned Client',
+            'Brand Color': '#0a66c2',
+            'Logo URL': ''
+        })
+        
+        profile_map[p_id] = {
+            'Full Name': name,
+            'Job Title': title,
+            'Company Name': comp_info['Company Name'],
+            'Brand Color': comp_info['Brand Color'],
+            'Logo URL': comp_info['Logo URL']
+        }
+
+    # 3. Process Metrics Dataset with complete tenant metadata
     metrics_data = []
     for r in raw_metrics:
         fields = r['fields'].copy()
         profile_ids = fields.get('Profile', [])
-        fields['Profile Name'] = id_to_name.get(profile_ids[0], 'Unassigned') if profile_ids else 'Unassigned'
-        fields['Job Title'] = id_to_title.get(profile_ids[0], 'Executive') if profile_ids else 'Executive'
+        p_id = profile_ids[0] if profile_ids else None
+        
+        p_info = profile_map.get(p_id, {
+            'Full Name': 'Unassigned',
+            'Job Title': 'Executive',
+            'Company Name': 'Unassigned Client',
+            'Brand Color': '#0a66c2',
+            'Logo URL': ''
+        })
+        
+        fields['Profile Name'] = p_info['Full Name']
+        fields['Job Title'] = p_info['Job Title']
+        fields['Company Name'] = p_info['Company Name']
+        fields['Brand Color'] = p_info['Brand Color']
+        fields['Logo URL'] = p_info['Logo URL']
         metrics_data.append(fields)
 
     df_m = pd.DataFrame(metrics_data)
@@ -97,14 +135,27 @@ def load_all_data():
             else:
                 df_m[metric_col] = 0
     else:
-        df_m = pd.DataFrame(columns=['Profile Name', 'Job Title', 'Date', 'Total followers', 'SSI', 'Profile views', 'Appearances'])
+        df_m = pd.DataFrame(columns=['Profile Name', 'Job Title', 'Company Name', 'Brand Color', 'Logo URL', 'Date', 'Total followers', 'SSI', 'Profile views', 'Appearances'])
 
-    # Process Content Logs Dataset
+    # 4. Process Content Logs Dataset with complete tenant metadata
     posts_data = []
     for r in raw_posts:
         fields = r['fields'].copy()
         profile_ids = fields.get('Profile', [])
-        fields['Profile Name'] = id_to_name.get(profile_ids[0], 'Unassigned') if profile_ids else 'Unassigned'
+        p_id = profile_ids[0] if profile_ids else None
+        
+        p_info = profile_map.get(p_id, {
+            'Full Name': 'Unassigned',
+            'Job Title': 'Executive',
+            'Company Name': 'Unassigned Client',
+            'Brand Color': '#0a66c2',
+            'Logo URL': ''
+        })
+        
+        fields['Profile Name'] = p_info['Full Name']
+        fields['Company Name'] = p_info['Company Name']
+        fields['Brand Color'] = p_info['Brand Color']
+        fields['Logo URL'] = p_info['Logo URL']
         posts_data.append(fields)
 
     df_p = pd.DataFrame(posts_data)
@@ -136,30 +187,68 @@ def load_all_data():
                 df_p[text_col] = df_p[text_col].fillna("")
     else:
         df_p = pd.DataFrame(columns=[
-            'Profile Name', 'Publish Date', 'YearMonth', 'Impressions', 'Engagement',
-            'Reactions', 'Comments', 'Profile Visitors From Post', 'Members Reached',
-            'Followers Gained From Post', 'Reposts', 'Saves', 'Sends on LinkedIn',
+            'Profile Name', 'Company Name', 'Brand Color', 'Logo URL', 'Publish Date', 'YearMonth', 
+            'Impressions', 'Engagement', 'Reactions', 'Comments', 'Profile Visitors From Post', 
+            'Members Reached', 'Followers Gained From Post', 'Reposts', 'Saves', 'Sends on LinkedIn',
             'Decision-Maker Reach %', 'Top Target Accounts', 'Top Core Industries', 'Topic'
         ])
 
-    return df_m, df_p
+    return df_m, df_p, raw_profiles
 
 
-# Add dynamic loading visibility to the initial data handshake
-with st.spinner("⚡ Connecting to Airtable and fetching fresh portfolio metrics..."):
+# Load master pipeline data
+with st.spinner("⚡ Connecting to Airtable and fetching fresh multi-tenant metrics..."):
     try:
-        df_metrics, df_posts = load_all_data()
+        df_metrics_raw, df_posts_raw, raw_profiles_raw = load_all_data()
         st.sidebar.success("⚡ Live Database Sync Active")
     except Exception as e:
         st.error(f"❌ Connection Mapping Breakpoint Encountered: {e}")
         st.stop()
 
-# Safely establish timelines while avoiding blanks
+# --- 4. GLOBAL MULTI-TENANT FILTER & SCOPING CONTROLLER ---
+st.sidebar.title("🏢 Agency Control Panel")
+
+all_companies_list = sorted([c for c in df_metrics_raw['Company Name'].unique() if c != 'Unassigned Client'])
+if not all_companies_list:
+    st.error("❌ No valid companies found in your database mapping. Assign profiles to companies in Airtable first.")
+    st.stop()
+
+selected_company = st.sidebar.selectbox("🎯 Select Client Portfolio", all_companies_list)
+
+# Scoping the physical DataFrames dynamically to the selected client
+df_metrics = df_metrics_raw[df_metrics_raw['Company Name'] == selected_company].copy()
+df_posts = df_posts_raw[df_posts_raw['Company Name'] == selected_company].copy()
+
+if df_metrics.empty:
+    st.error(f"❌ No metric entries were resolved for {selected_company}.")
+    st.stop()
+
+# Extract Company branding metadata dynamically
+client_brand_color = df_metrics['Brand Color'].iloc[0] if 'Brand Color' in df_metrics.columns else '#0a66c2'
+client_logo_url = df_metrics['Logo URL'].iloc[0] if 'Logo URL' in df_metrics.columns and pd.notna(df_metrics['Logo URL'].iloc[0]) else ''
+
+# Apply dynamic white-label CSS properties
+st.markdown(f'''
+<style>
+    [data-testid="stMetricValue"] {{ font-size: 26px; font-weight: bold; }}
+    [data-testid="stMetricDelta"] {{ font-size: 13px; }}
+    .comment-box {{ border-left: 4px solid {client_brand_color}; padding-left: 15px; margin: 10px 0; background-color: #f4f6f9; padding: 10px; border-radius: 4px; }}
+</style>
+''', unsafe_allow_html=True)
+
+# Timelines scoping
 df_metrics['YearMonth'] = df_metrics['Date'].dt.to_period('M')
 available_months = sorted(df_metrics['YearMonth'].dropna().unique(), reverse=True)
 all_profiles_list = sorted(df_metrics['Profile Name'].unique())
 
-# --- 4. STATE MANAGEMENT & CROSS-TAB INPUT SYNCHRONIZATION ---
+if not available_months:
+    st.sidebar.error("❌ No valid time tracking records parsed for this client.")
+    st.stop()
+
+selected_ym = st.sidebar.selectbox("📅 Reporting Horizon", available_months, format_func=lambda x: x.strftime('%B %Y'))
+selected_profile = st.sidebar.selectbox("👤 Executive Focus", all_profiles_list)
+
+# --- 5. STATE MANAGEMENT & CROSS-TAB INPUT SYNCHRONIZATION ---
 if "manager_notes" not in st.session_state:
     st.session_state.manager_notes = {}
 
@@ -182,18 +271,10 @@ def sync_from_ind(name):
     st.session_state[f"team_notes_{name}"] = val
 
 
-# --- GLOBAL NAVIGATION CONTROL PANEL & INGESTION HUB ---
-st.sidebar.title("Navigation Panel")
-if not available_months:
-    st.sidebar.error("❌ No valid time tracking records were parsed out from Airtable data columns.")
-    st.stop()
-
-selected_ym = st.sidebar.selectbox("📅 Reporting Horizon", available_months, format_func=lambda x: x.strftime('%B %Y'))
-selected_profile = st.sidebar.selectbox("🎯 Target Professional Focus", all_profiles_list)
-
-# --- ADVANCED POST ANALYTICS DRAG-AND-DROP INGESTION ENGINE ---
-with st.sidebar.expander("📤 Post Ingestion Center"):
+# --- 6. SCOPED POST INGESTION ENGINE ---
+with st.sidebar.expander("📤 Scoped Post Ingestion"):
     st.markdown("### Process Single-Post Export")
+    # Only show executives belonging to the selected client company to prevent cross-company upload errors
     target_upload_profile = st.selectbox("Assign Post Data To:", all_profiles_list, key="upload_exec_select")
     uploaded_post_file = st.file_uploader("Upload LinkedIn Excel / CSV", type=["xlsx", "csv"])
     entered_topic = st.text_input("Content Topic / Context", placeholder="e.g., Q3 Keynote Address")
@@ -251,7 +332,7 @@ with st.sidebar.expander("📤 Post Ingestion Center"):
                 try: clean_date = pd.to_datetime(raw_date).strftime('%Y-%m-%d')
                 except: clean_date = datetime.today().strftime('%Y-%m-%d')
 
-                companies, industries = [], []
+                companies_list_from_file, industries = [], []
                 computed_dm_reach = 0.0
                 decision_tiers = ['Director', 'VP', 'CXO', 'Owner', 'Partner']
 
@@ -259,15 +340,15 @@ with st.sidebar.expander("📤 Post Ingestion Center"):
                     df_upload['Pct'] = df_upload['Pct'].astype(str).str.strip()
                     for _, r in df_upload.iterrows():
                         c_label, c_val, c_pct = str(r['Label']), str(r['Value']), str(r['Pct'])
-                        if c_label == 'Company': companies.append(c_val)
+                        if c_label == 'Company': companies_list_from_file.append(c_val)
                         elif c_label == 'Industry': industries.append(c_val)
                         elif c_label == 'Seniority' and c_val in decision_tiers:
                             try: computed_dm_reach += float(c_pct.replace('%', ''))
                             except: pass
 
-                all_raw_profiles = profiles_table.all()
+                # Map directly to the mapped profile record id in Airtable
                 profile_record_id = None
-                for p_rec in all_raw_profiles:
+                for p_rec in raw_profiles_raw:
                     if p_rec['fields'].get('Full Name') == target_upload_profile:
                         profile_record_id = p_rec['id']
                         break
@@ -287,7 +368,7 @@ with st.sidebar.expander("📤 Post Ingestion Center"):
                     "Saves": read_field('Saves'),
                     "Sends on LinkedIn": read_field('Sends on LinkedIn'),
                     "Decision-Maker Reach %": computed_dm_reach / 100.0,
-                    "Top Target Accounts": ", ".join(companies[:3]),
+                    "Top Target Accounts": ", ".join(companies_list_from_file[:3]),
                     "Top Core Industries": ", ".join(industries[:3])
                 }
 
@@ -302,7 +383,7 @@ with st.sidebar.expander("📤 Post Ingestion Center"):
                 st.sidebar.error(f"Ingestion break: {error_details}")
 
 
-# --- 5. GRAPH ENGINE BASE64 EXPORT UTILITY (Thread-Isolated Figures) ---
+# --- 7. GRAPH ENGINE BASE64 EXPORT UTILITY (Thread-Isolated Figures) ---
 def export_plot_to_b64(df_source, column_name, chart_type='line', color='#0a66c2'):
     if df_source.empty or column_name not in df_source.columns:
         return ""
@@ -329,29 +410,32 @@ def export_plot_to_b64(df_source, column_name, chart_type='line', color='#0a66c2
     return f"data:image/png;base64,{base64.b64encode(img_buf.read()).decode('utf-8')}"
 
 
-# --- 6. CACHED PDF REPORT COMPILERS ---
-def generate_team_progress_pdf(df_source, trends_df, manager_notes, horizon_str):
-    html_template = """
+# --- 8. CACHED PDF REPORT COMPILERS (White-Labeled & Brand-Aware) ---
+def generate_team_progress_pdf(df_source, trends_df, manager_notes, horizon_str, company_name, brand_color, logo_url):
+    logo_html = f"<img src='{logo_url}' style='height: 45px; max-width: 200px; float: right; margin-top: -5px;'>" if logo_url else ""
+    
+    html_template = f"""
     <!DOCTYPE html><html><head><meta charset='utf-8'><style>
-        @page { size: A4 landscape; margin: 10mm; background-color: #fafbfc; }
-        body { font-family: sans-serif; color: #1e293b; font-size: 8.5pt; line-height: 1.4; }
-        .header { background: #0f172a; color: white; padding: 15px 20px; border-radius: 6px; margin-bottom: 12px; }
-        h1 { margin: 0; font-size: 16pt; } .subtitle { margin: 2px 0 0 0; color: #94a3b8; }
-        table { width: 100%; border-collapse: collapse; margin-top: 10px; background: white; page-break-inside: avoid; }
-        th { background: #1e3a8a; color: white; text-align: left; padding: 7px 9px; font-size: 8.5pt; font-weight: 600; border: 1px solid #cbd5e1; }
-        td { padding: 7px 9px; border: 1px solid #e2e8f0; vertical-align: top; }
-        tr:nth-child(even) { background: #f8fafc; }
-        .section-lbl { font-size: 7.5pt; text-transform: uppercase; color: #64748b; font-weight: bold; display: block; margin-bottom: 1px; }
-        .note-box { background-color: #f1f5f9; padding: 5px; border-left: 3px solid #0a66c2; font-style: italic; margin-top: 3px; border-radius: 2px; font-size: 8pt; }
-        .pos { color: #16a34a; font-weight: bold; } .neg { color: #dc2626; font-weight: bold; }
-        .grid-table { width: 100%; border-collapse: collapse; margin-top: 15px; background: transparent; }
-        .grid-table td { border: none; padding: 6px; width: 50%; }
-        .chart-card { background: white; border: 1px solid #cbd5e1; padding: 8px; border-radius: 4px; text-align: center; }
-        .chart-title { font-size: 8.5pt; font-weight: bold; color: #334155; margin-bottom: 4px; text-align: left; }
-        .page-break { page-break-before: always; }
+        @page {{ size: A4 landscape; margin: 10mm; background-color: #fafbfc; }}
+        body {{ font-family: sans-serif; color: #1e293b; font-size: 8.5pt; line-height: 1.4; }}
+        .header {{ background: #0f172a; color: white; padding: 15px 20px; border-radius: 6px; margin-bottom: 12px; border-left: 6px solid {brand_color}; }}
+        h1 {{ margin: 0; font-size: 16pt; }} .subtitle {{ margin: 2px 0 0 0; color: #94a3b8; }}
+        table {{ width: 100%; border-collapse: collapse; margin-top: 10px; background: white; page-break-inside: avoid; }}
+        th {{ background: {brand_color}; color: white; text-align: left; padding: 7px 9px; font-size: 8.5pt; font-weight: 600; border: 1px solid #cbd5e1; }}
+        td {{ padding: 7px 9px; border: 1px solid #e2e8f0; vertical-align: top; }}
+        tr:nth-child(even) {{ background: #f8fafc; }}
+        .section-lbl {{ font-size: 7.5pt; text-transform: uppercase; color: #64748b; font-weight: bold; display: block; margin-bottom: 1px; }}
+        .note-box {{ background-color: #f1f5f9; padding: 5px; border-left: 3px solid {brand_color}; font-style: italic; margin-top: 3px; border-radius: 2px; font-size: 8pt; }}
+        .pos {{ color: #16a34a; font-weight: bold; }} .neg {{ color: #dc2626; font-weight: bold; }}
+        .grid-table {{ width: 100%; border-collapse: collapse; margin-top: 15px; background: transparent; }}
+        .grid-table td {{ border: none; padding: 6px; width: 50%; }}
+        .chart-card {{ background: white; border: 1px solid #cbd5e1; padding: 8px; border-radius: 4px; text-align: center; }}
+        .chart-title {{ font-size: 8.5pt; font-weight: bold; color: #334155; margin-bottom: 4px; text-align: left; }}
+        .page-break {{ page-break-before: always; }}
     </style></head><body>
         <div class='header'>
-            <h1>Executive Portfolio Progress Report</h1>
+            {logo_html}
+            <h1>{company_name} — Portfolio Progress Report</h1>
             <p class='subtitle'>Combined Standings Tracker & Performance Horizons Index — __HORIZON__</p>
         </div>
         <div style='display: table; width: 100%; margin-bottom: 12px;'>
@@ -431,7 +515,7 @@ def generate_team_progress_pdf(df_source, trends_df, manager_notes, horizon_str)
                 <span class='section-lbl'>Monthly:</span> <span class='{s_mom_cls}'>{row['SSI MoM Shift']:+g} pts MoM</span><br>
                 <span class='section-lbl'>Overall:</span> <span class='{s_inc_cls}'>{row['SSI Inc Shift']:+g} pts since inception</span>
             </td>
-            <td style='text-align: center;'><strong style='font-size:12pt; color:#0a66c2;'>{int(row['Posts Published'])}</strong><br><span style='font-size:7.5pt; color:#64748b;'>Published</span></td>
+            <td style='text-align: center;'><strong style='font-size:12pt; color:{brand_color};'>{int(row['Posts Published'])}</strong><br><span style='font-size:7.5pt; color:#64748b;'>Published</span></td>
             <td>
                 <span class='section-lbl'>Profile Views:</span> <strong>{int(row['Views']):,}</strong><br>
                 <span class='section-lbl'>Profile Appearances:</span> <strong>{int(row['Appearances']):,}</strong>
@@ -442,7 +526,7 @@ def generate_team_progress_pdf(df_source, trends_df, manager_notes, horizon_str)
     
     hist_metrics_clean = trends_df.groupby(level=0).last() if isinstance(trends_df.index, pd.MultiIndex) else trends_df.groupby(trends_df.index).last()
 
-    b64_fol = export_plot_to_b64(hist_metrics_clean, 'Total followers', 'line', '#0a66c2')
+    b64_fol = export_plot_to_b64(hist_metrics_clean, 'Total followers', 'line', brand_color)
     b64_views = export_plot_to_b64(hist_metrics_clean, 'Profile views', 'line', '#1db954')
     b64_app = export_plot_to_b64(hist_metrics_clean, 'Appearances', 'line', '#ff9900')
     b64_ssi = export_plot_to_b64(hist_metrics_clean, 'SSI', 'line', '#dc2626')
@@ -451,7 +535,7 @@ def generate_team_progress_pdf(df_source, trends_df, manager_notes, horizon_str)
                               .replace("__HORIZON__", horizon_str)\
                               .replace("__TOTAL_REACH__", f"{df_source['Followers'].sum():,}")\
                               .replace("__TOTAL_POSTS__", f"{df_source['Posts Published'].sum()}")\
-                              .replace("__AVG_SSI__", f"{int(df_source['SSI'].mean())}/100")\
+                              .replace("__AVG_SSI__", f"{int(df_source['SSI'].mean()) if not df_source.empty else 0}/100")\
                               .replace("__IMG_FOL__", b64_fol)\
                               .replace("__IMG_VIEWS__", b64_views)\
                               .replace("__IMG_APP__", b64_app)\
@@ -462,26 +546,29 @@ def generate_team_progress_pdf(df_source, trends_df, manager_notes, horizon_str)
     return buf.getvalue()
 
 
-def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, selected_profile, job_title_str, horizon_str, f_curr, f_mom, f_inc, s_curr, s_mom, s_inc, posts_count, views_count, app_count, avg_dm_reach, accounts_str, industries_str, total_high_intent, b64_reach_pct, b64_members_reached, b64_eng_rate):
-    html_template = """
+def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, selected_profile, job_title_str, horizon_str, f_curr, f_mom, f_inc, s_curr, s_mom, s_inc, posts_count, views_count, app_count, avg_dm_reach, accounts_str, industries_str, total_high_intent, b64_reach_pct, b64_members_reached, b64_eng_rate, brand_color, logo_url):
+    logo_html = f"<img src='{logo_url}' style='height: 45px; max-width: 200px; float: right; margin-top: -5px;'>" if logo_url else ""
+
+    html_template = f"""
     <!DOCTYPE html><html><head><meta charset='utf-8'><style>
-        @page { size: A4; margin: 15mm 15mm; background-color: #f8fafc; }
-        body { font-family: Arial, sans-serif; color: #1e293b; font-size: 10pt; line-height: 1.5; }
-        .header { background: #1e3a8a; color: white; padding: 20px; border-radius: 6px; margin-bottom: 20px; }
-        h1 { margin: 0; font-size: 18pt; } .title { color: #bfdbfe; margin: 2px 0 0 0; }
-        .card { background: white; padding: 16px; border: 1px solid #e2e8f0; border-top: 4px solid #2563eb; margin-bottom: 15px; border-radius: 4px; }
-        .val { font-size: 22pt; font-weight: bold; color: #0f172a; margin-bottom: 5px; }
-        .pos { color: #16a34a; font-weight: bold; } .neg { color: #dc2626; font-weight: bold; }
-        .notes-block { background-color: #f1f5f9; padding: 15px; border-left: 4px solid #0a66c2; border-radius: 4px; margin-top: 20px; }
-        .grid-table { width: 100%; border-collapse: collapse; background: transparent; page-break-inside: avoid; }
-        .grid-table td { border: none; padding: 5px; width: 50%; }
-        .chart-card { background: white; border: 1px solid #cbd5e1; padding: 6px; border-radius: 4px; text-align: center; }
-        .chart-title { font-size: 8pt; font-weight: bold; color: #475569; margin-bottom: 3px; text-align: left; }
-        .page-break { page-break-before: always; }
+        @page {{ size: A4; margin: 15mm 15mm; background-color: #f8fafc; }}
+        body {{ font-family: Arial, sans-serif; color: #1e293b; font-size: 10pt; line-height: 1.5; }}
+        .header {{ background: #1e3a8a; color: white; padding: 20px; border-radius: 6px; margin-bottom: 20px; border-left: 6px solid {brand_color}; }}
+        h1 {{ margin: 0; font-size: 18pt; }} .title {{ color: #bfdbfe; margin: 2px 0 0 0; }}
+        .card {{ background: white; padding: 16px; border: 1px solid #e2e8f0; border-top: 4px solid {brand_color}; margin-bottom: 15px; border-radius: 4px; }}
+        .val {{ font-size: 22pt; font-weight: bold; color: #0f172a; margin-bottom: 5px; }}
+        .pos {{ color: #16a34a; font-weight: bold; }} .neg {{ color: #dc2626; font-weight: bold; }}
+        .notes-block {{ background-color: #f1f5f9; padding: 15px; border-left: 4px solid {brand_color}; border-radius: 4px; margin-top: 20px; }}
+        .grid-table {{ width: 100%; border-collapse: collapse; background: transparent; page-break-inside: avoid; }}
+        .grid-table td {{ border: none; padding: 5px; width: 50%; }}
+        .chart-card {{ background: white; border: 1px solid #cbd5e1; padding: 6px; border-radius: 4px; text-align: center; }}
+        .chart-title {{ font-size: 8pt; font-weight: bold; color: #475569; margin-bottom: 3px; text-align: left; }}
+        .page-break {{ page-break-before: always; }}
     </style></head><body>
         <div class='header'>
+            {logo_html}
             <h1>__NAME__</h1>
-            <p class='title'>__TITLE__ — Summary Document (__MONTH__)</p>
+            <p class='title'>__TITLE__ — Executive Performance Brief (__MONTH__)</p>
         </div>
         <div class='card'>
             <div class='val'>__FOL_CURR__</div>
@@ -553,7 +640,7 @@ def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, se
     comment_html = manager_notes_str.replace("\n", "<br>") if manager_notes_str else "<em>No remarks logged.</em>"
     hist_metrics_clean = hist_metrics.groupby('Date').last()
 
-    b64_ind_fol = export_plot_to_b64(hist_metrics_clean, 'Total followers', 'line', '#0a66c2')
+    b64_ind_fol = export_plot_to_b64(hist_metrics_clean, 'Total followers', 'line', brand_color)
     b64_ind_ssi = export_plot_to_b64(hist_metrics_clean, 'SSI', 'line', '#dc2626')
     b64_ind_app = export_plot_to_b64(hist_metrics_clean, 'Appearances', 'line', '#ff9900')
     b64_ind_views = export_plot_to_b64(hist_metrics_clean, 'Profile views', 'line', '#1db954')
@@ -562,7 +649,7 @@ def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, se
     if not content_df.empty:
         monthly_posts_perf = content_df.groupby('YearMonth').agg({'Impressions': 'sum', 'Engagement': 'sum'}).sort_index()
         monthly_posts_perf.index = monthly_posts_perf.index.astype(str)
-        b64_post_imp = export_plot_to_b64(monthly_posts_perf, 'Impressions', 'bar', '#0a66c2')
+        b64_post_imp = export_plot_to_b64(monthly_posts_perf, 'Impressions', 'bar', brand_color)
         b64_post_eng = export_plot_to_b64(monthly_posts_perf, 'Engagement', 'bar', '#1db954')
 
         content_section_html = f"""
@@ -651,21 +738,21 @@ def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, se
     return buf.getvalue()
 
 
-# --- 7. CROSS-PROFILE LEADERBOARD STANDINGS ---
-def compute_profile_standings(df_metrics, df_posts, all_profiles_list, selected_ym):
+# --- 9. CROSS-PROFILE LEADERBOARD STANDINGS ---
+def compute_profile_standings(df_metrics_source, df_posts_source, target_profiles, selected_ym_target):
     rows = []
-    for name in all_profiles_list:
-        pm = df_metrics[df_metrics['Profile Name'] == name].sort_values('Date')
+    for name in target_profiles:
+        pm = df_metrics_source[df_metrics_source['Profile Name'] == name].sort_values('Date')
         if pm.empty:
             continue
 
         job_title = pm['Job Title'].iloc[-1] if 'Job Title' in pm.columns else 'Executive'
         first = pm.iloc[0]
 
-        current_rows = pm[pm['YearMonth'] == selected_ym]
+        current_rows = pm[pm['YearMonth'] == selected_ym_target]
         current = current_rows.iloc[-1] if not current_rows.empty else pm.iloc[-1]
 
-        prev_rows = pm[pm['YearMonth'] == (selected_ym - 1)]
+        prev_rows = pm[pm['YearMonth'] == (selected_ym_target - 1)]
         prev = prev_rows.iloc[-1] if not prev_rows.empty else None
 
         followers_curr = current['Total followers']
@@ -679,8 +766,8 @@ def compute_profile_standings(df_metrics, df_posts, all_profiles_list, selected_
         ssi_inc = ssi_curr - first['SSI']
 
         posts_count = 0
-        if not df_posts.empty:
-            posts_count = len(df_posts[(df_posts['Profile Name'] == name) & (df_posts['YearMonth'] == selected_ym)])
+        if not df_posts_source.empty:
+            posts_count = len(df_posts_source[(df_posts_source['Profile Name'] == name) & (df_posts_source['YearMonth'] == selected_ym_target)])
 
         rows.append({
             'Profile Name': name,
@@ -699,9 +786,10 @@ def compute_profile_standings(df_metrics, df_posts, all_profiles_list, selected_
     return pd.DataFrame(rows)
 
 
+# Process the scoped client standings table
 df_team_standings = compute_profile_standings(df_metrics, df_posts, all_profiles_list, selected_ym)
 
-# --- 8. TAB LAYOUT ---
+# --- 10. TAB LAYOUT ---
 tab_team, tab_individual = st.tabs(["👥 Team Overview", "🎯 Individual Deep Dive"])
 
 
@@ -709,7 +797,7 @@ tab_team, tab_individual = st.tabs(["👥 Team Overview", "🎯 Individual Deep 
 # 👥 TAB 1: MASTER COMBINED TEAM METRIC HUB
 # ==========================================
 with tab_team:
-    st.subheader("👥 Managed Portfolio Summary Leaderboard")
+    st.subheader(f"👥 {selected_company} Standing Leaderboard")
     st.markdown("Aggregated standings with cross-profile analytics tracking overall, monthly progress, and content velocity.")
     st.markdown("---")
 
@@ -735,7 +823,8 @@ with tab_team:
     if st.button("🛠️ Compile Portfolio PDF Report"):
         try:
             team_report_bytes = generate_team_progress_pdf(
-                df_team_standings, team_trends_df, st.session_state.manager_notes, selected_ym.strftime('%B %Y')
+                df_team_standings, team_trends_df, st.session_state.manager_notes, 
+                selected_ym.strftime('%B %Y'), selected_company, client_brand_color, client_logo_url
             )
             st.session_state.compiled_team_pdf = team_report_bytes
             st.success("✨ Report compilation complete!")
@@ -744,19 +833,27 @@ with tab_team:
 
     if "compiled_team_pdf" in st.session_state:
         st.download_button(
-            label="📥 Download Executive Portfolio Progress PDF",
+            label=f"📥 Download {selected_company} Portfolio Progress PDF",
             data=st.session_state.compiled_team_pdf,
-            file_name=f"Executive_Portfolio_Progress_{selected_ym.strftime('%Y_%m')}.pdf",
+            file_name=f"{selected_company.replace(' ', '_')}_Progress_{selected_ym.strftime('%Y_%m')}.pdf",
             mime="application/pdf",
             use_container_width=True
         )
 
     st.markdown("---")
+    
+    # Safe metrics computations
+    total_followers = df_team_standings['Followers'].sum() if not df_team_standings.empty else 0
+    mean_ssi = df_team_standings['SSI'].mean() if not df_team_standings.empty else 0
+    safe_ssi = int(mean_ssi) if pd.notna(mean_ssi) else 0
+    total_posts = df_team_standings['Posts Published'].sum() if not df_team_standings.empty else 0
+    total_views = df_team_standings['Views'].sum() if not df_team_standings.empty else 0
+
     t_col1, t_col2, t_col3, t_col4 = st.columns(4)
-    t_col1.metric("Total Follower Count", f"{df_team_standings['Followers'].sum():,} ")
-    t_col2.metric("Average SSI Score", f"{int(df_team_standings['SSI'].mean())}/100")
-    t_col3.metric("Total Content Output", f"{df_team_standings['Posts Published'].sum()} Posts")
-    t_col4.metric("Combined Active Views (Period)", f"{df_team_standings['Views'].sum():,}")
+    t_col1.metric("Total Follower Count", f"{total_followers:,} ")
+    t_col2.metric("Average SSI Score", f"{safe_ssi}/100")
+    t_col3.metric("Total Content Output", f"{total_posts} Posts")
+    t_col4.metric("Combined Active Views (Period)", f"{total_views:,}")
 
     st.markdown("---")
     st.subheader("📊 Combined Team Macro-Trend Vectors (All-Time History)")
@@ -764,7 +861,7 @@ with tab_team:
     tc1, tc2 = st.columns(2)
     with tc1:
         st.caption("👥 Combined Follower Growth")
-        st.line_chart(team_trends_df[['Total followers']], color="#0a66c2")
+        st.line_chart(team_trends_df[['Total followers']], color=client_brand_color)
         st.caption("🔍 Combined Platform-Wide Visibility")
         st.line_chart(team_trends_df[['Appearances']], color="#ff9900")
     with tc2:
@@ -792,7 +889,7 @@ with tab_individual:
     matching_profile_rows = df_team_standings[df_team_standings['Profile Name'] == selected_profile] if not df_team_standings.empty else pd.DataFrame()
 
     if matching_profile_rows.empty:
-        st.info(f"📅 No metrics tracking matrices could be mapped out for **{selected_profile}** during this reporting horizon. Add history records in Airtable or process an organic post export to activate this space.")
+        st.info(f"📅 No metrics tracking matrices could be mapped out for **{selected_profile}** during this reporting horizon.")
     else:
         prof_row = matching_profile_rows.iloc[0]
         profile_metrics = df_metrics[df_metrics['Profile Name'] == selected_profile].sort_values('Date')
@@ -825,7 +922,7 @@ with tab_individual:
             denom_f = float(prof_row['Followers']) if float(prof_row['Followers']) > 0 else 1.0
             pdf_plot_df['Reach (%)'] = (pdf_plot_df['Impressions'] / denom_f) * 100
             
-            b64_reach_pct = export_plot_to_b64(pdf_plot_df, 'Reach (%)', 'bar', '#0a66c2')
+            b64_reach_pct = export_plot_to_b64(pdf_plot_df, 'Reach (%)', 'bar', client_brand_color)
             b64_members_reached = export_plot_to_b64(pdf_plot_df, 'Members Reached', 'bar', '#ff9900')
             b64_eng_rate = export_plot_to_b64(pdf_plot_df, 'Engagement Rate (%)', 'bar', '#1db954')
 
@@ -852,7 +949,8 @@ with tab_individual:
                         prof_row['SSI'], prof_row['SSI MoM Shift'], prof_row['SSI Inc Shift'],
                         prof_row['Posts Published'], prof_row['Views'], prof_row['Appearances'],
                         avg_dm_reach, accounts_summary_str, industries_summary_str, total_high_intent,
-                        b64_reach_pct, b64_members_reached, b64_eng_rate
+                        b64_reach_pct, b64_members_reached, b64_eng_rate,
+                        client_brand_color, client_logo_url
                     )
                     st.session_state[f"compiled_single_pdf_{selected_profile}"] = single_pdf_bytes
                     st.success("✨ Dossier completed successfully!")
@@ -891,7 +989,7 @@ with tab_individual:
             ic1, ic2 = st.columns(2)
             with ic1:
                 st.caption("📈 Total Followers")
-                st.line_chart(profile_metrics_clean[['Total followers']], color="#0a66c2")
+                st.line_chart(profile_metrics_clean[['Total followers']], color=client_brand_color)
                 st.caption("🔍 Platform-Wide Profile Appearances")
                 st.line_chart(profile_metrics_clean[['Appearances']], color="#ff9900")
             with ic2:
@@ -914,7 +1012,7 @@ with tab_individual:
                 pc1, pc2 = st.columns(2)
                 with pc1:
                     st.caption("📈 Total Organic Post Impressions by Calendar Month")
-                    st.bar_chart(monthly_posts_perf['Impressions'], color="#0a66c2")
+                    st.bar_chart(monthly_posts_perf['Impressions'], color=client_brand_color)
                 with pc2:
                     st.caption("❤️ Total Post Engagement Interactions by Calendar Month")
                     st.bar_chart(monthly_posts_perf['Engagement'], color="#1db954")
@@ -924,7 +1022,7 @@ with tab_individual:
                     p_ch1, p_ch2, p_ch3 = st.columns(3)
                     with p_ch1:
                         st.caption("🎯 Organic Reach % per Post (Impressions / Followers)")
-                        st.bar_chart(pdf_plot_df['Reach (%)'], color="#0a66c2")
+                        st.bar_chart(pdf_plot_df['Reach (%)'], color=client_brand_color)
                     with p_ch2:
                         st.caption("👥 Unique Members Reached per Post")
                         st.bar_chart(pdf_plot_df['Members Reached'], color="#ff9900")
