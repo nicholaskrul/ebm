@@ -234,7 +234,6 @@ else:
     client_logo_url = ''
     for r in raw_profiles_raw:
         fields = r['fields']
-        # Double check link matching
         if fields.get('Company'):
             client_brand_color = fields.get('Brand Color', '#0a66c2')
             client_logo_url = fields.get('Logo URL', '')
@@ -810,10 +809,18 @@ def compute_profile_standings(df_metrics_source, df_posts_source, target_profile
             'Appearances': current['Appearances'],
         })
 
+    # Return structured empty DataFrame to avoid downstream KeyError crashes
+    if not rows:
+        return pd.DataFrame(columns=[
+            'Profile Name', 'Job Title', 'Followers', 'Followers MoM%', 
+            'Followers Inc Growth', 'SSI', 'SSI MoM Shift', 'SSI Inc Shift', 
+            'Posts Published', 'Views', 'Appearances'
+        ])
+
     return pd.DataFrame(rows)
 
 
-# Process the scoped client standings table
+# Process the scoped standings table
 df_team_standings = compute_profile_standings(df_metrics, df_posts, all_profiles_list, selected_ym)
 
 # --- 10. TAB LAYOUT ---
@@ -903,9 +910,10 @@ with tab_team:
     st.markdown("---")
     st.markdown("### 📋 Detailed Cross-Profile Leaderboard")
     display_team_df = df_team_standings.copy()
-    display_team_df['Manager Remarks'] = display_team_df['Profile Name'].map(lambda x: st.session_state.manager_notes.get(x, ""))
     
+    # Empty DataFrame verification guardrail against KeyErrors
     if not display_team_df.empty:
+        display_team_df['Manager Remarks'] = display_team_df['Profile Name'].map(lambda x: st.session_state.manager_notes.get(x, ""))
         st.dataframe(
             display_team_df.set_index('Profile Name')[
                 ['Job Title', 'Followers', 'Followers MoM%', 'Followers Inc Growth', 'SSI', 'SSI MoM Shift', 'SSI Inc Shift', 'Posts Published', 'Views', 'Appearances', 'Manager Remarks']
