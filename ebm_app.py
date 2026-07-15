@@ -65,13 +65,16 @@ def load_all_data():
     raw_metrics = metrics_table.all()
     raw_posts = posts_table.all()
 
-    # 1. Map Company IDs to metadata details
+    # 1. Map Company IDs to metadata details (with default column fallbacks)
     id_to_company = {}
     for r in raw_companies:
         fields = r['fields']
+        resolved_name = fields.get('Company Name') or fields.get('Name') or 'Unknown Company'
+        resolved_color = fields.get('Brand Color') or fields.get('Hex Color') or '#0a66c2'
+        
         id_to_company[r['id']] = {
-            'Company Name': fields.get('Company Name', 'Unknown Company'),
-            'Brand Color': fields.get('Brand Color', '#0a66c2'),  # Default to LinkedIn Blue
+            'Company Name': resolved_name,
+            'Brand Color': resolved_color,
             'Logo URL': fields.get('Logo URL', '')
         }
 
@@ -193,13 +196,16 @@ def load_all_data():
             'Decision-Maker Reach %', 'Top Target Accounts', 'Top Core Industries', 'Topic'
         ])
 
-    return df_m, df_p, raw_profiles
+    # 5. Prevent "Cold Start" bug by pulling active companies directly from master table records
+    all_companies = sorted(list(set([info['Company Name'] for info in id_to_company.values() if info['Company Name'] != 'Unknown Company'])))
+
+    return df_m, df_p, raw_profiles, all_companies
 
 
 # Load master pipeline data
 with st.spinner("⚡ Connecting to Airtable and fetching fresh multi-tenant metrics..."):
     try:
-        df_metrics_raw, df_posts_raw, raw_profiles_raw = load_all_data()
+        df_metrics_raw, df_posts_raw, raw_profiles_raw, all_companies_list = load_all_data()
         st.sidebar.success("⚡ Live Database Sync Active")
     except Exception as e:
         st.error(f"❌ Connection Mapping Breakpoint Encountered: {e}")
@@ -208,26 +214,33 @@ with st.spinner("⚡ Connecting to Airtable and fetching fresh multi-tenant metr
 # --- 4. GLOBAL MULTI-TENANT FILTER & SCOPING CONTROLLER ---
 st.sidebar.title("🏢 Agency Control Panel")
 
-all_companies_list = sorted([c for c in df_metrics_raw['Company Name'].unique() if c != 'Unassigned Client'])
 if not all_companies_list:
-    st.error("❌ No valid companies found in your database mapping. Assign profiles to companies in Airtable first.")
+    st.error("❌ No valid companies found in your database mapping. Add a company to your Companies table in Airtable first.")
     st.stop()
 
 selected_company = st.sidebar.selectbox("🎯 Select Client Portfolio", all_companies_list)
 
-# Scoping the physical DataFrames dynamically to the selected client
+# Scope database tables dynamically to selected company
 df_metrics = df_metrics_raw[df_metrics_raw['Company Name'] == selected_company].copy()
 df_posts = df_posts_raw[df_posts_raw['Company Name'] == selected_company].copy()
 
-if df_metrics.empty:
-    st.error(f"❌ No metric entries were resolved for {selected_company}.")
-    st.stop()
+# Robust styling parameters extraction
+if not df_metrics.empty:
+    client_brand_color = df_metrics['Brand Color'].iloc[0] if 'Brand Color' in df_metrics.columns else '#0a66c2'
+    client_logo_url = df_metrics['Logo URL'].iloc[0] if 'Logo URL' in df_metrics.columns and pd.notna(df_metrics['Logo URL'].iloc[0]) else ''
+else:
+    # If a brand-new company has zero records inside df_metrics yet (cold start), resolve branding from the raw loader mapping
+    client_brand_color = '#0a66c2'
+    client_logo_url = ''
+    for r in raw_profiles_raw:
+        fields = r['fields']
+        # Double check link matching
+        if fields.get('Company'):
+            client_brand_color = fields.get('Brand Color', '#0a66c2')
+            client_logo_url = fields.get('Logo URL', '')
+            break
 
-# Extract Company branding metadata dynamically
-client_brand_color = df_metrics['Brand Color'].iloc[0] if 'Brand Color' in df_metrics.columns else '#0a66c2'
-client_logo_url = df_metrics['Logo URL'].iloc[0] if 'Logo URL' in df_metrics.columns and pd.notna(df_metrics['Logo URL'].iloc[0]) else ''
-
-# Apply dynamic white-label CSS properties
+# Dynamic white-label CSS properties injection
 st.markdown(f'''
 <style>
     [data-testid="stMetricValue"] {{ font-size: 26px; font-weight: bold; }}
@@ -237,16 +250,31 @@ st.markdown(f'''
 ''', unsafe_allow_html=True)
 
 # Timelines scoping
-df_metrics['YearMonth'] = df_metrics['Date'].dt.to_period('M')
-available_months = sorted(df_metrics['YearMonth'].dropna().unique(), reverse=True)
-all_profiles_list = sorted(df_metrics['Profile Name'].unique())
+if not df_metrics.empty:
+    df_metrics['YearMonth'] = df_metrics['Date'].dt.to_period('M')
+    available_months = sorted(df_metrics['YearMonth'].dropna().unique(), reverse=True)
+    all_profiles_list = sorted(df_metrics['Profile Name'].unique())
+else:
+    available_months = [pd.Period(datetime.today().strftime('%Y-%m'), freq='M')]
+    all_profiles_list = []
 
-if not available_months:
-    st.sidebar.error("❌ No valid time tracking records parsed for this client.")
+# Scoped profiles mapping safeguards
+if not all_profiles_list:
+    # Populate profiles assigned to this company even if they have no metrics logs yet
+    all_profiles_list = sorted([
+        r['fields'].get('Full Name', 'Unknown') 
+        for r in raw_profiles_raw 
+        if r['fields'].get('Company Name') == selected_company or 
+        (r['fields'].get('Company') and len(r['fields'].get('Company')) > 0)
+    ])
+
+if not all_profiles_list:
+    st.warning(f"⚠️ No executive profiles have been linked to **{selected_company}** yet.")
     st.stop()
 
 selected_ym = st.sidebar.selectbox("📅 Reporting Horizon", available_months, format_func=lambda x: x.strftime('%B %Y'))
 selected_profile = st.sidebar.selectbox("👤 Executive Focus", all_profiles_list)
+
 
 # --- 5. STATE MANAGEMENT & CROSS-TAB INPUT SYNCHRONIZATION ---
 if "manager_notes" not in st.session_state:
@@ -274,7 +302,6 @@ def sync_from_ind(name):
 # --- 6. SCOPED POST INGESTION ENGINE ---
 with st.sidebar.expander("📤 Scoped Post Ingestion"):
     st.markdown("### Process Single-Post Export")
-    # Only show executives belonging to the selected client company to prevent cross-company upload errors
     target_upload_profile = st.selectbox("Assign Post Data To:", all_profiles_list, key="upload_exec_select")
     uploaded_post_file = st.file_uploader("Upload LinkedIn Excel / CSV", type=["xlsx", "csv"])
     entered_topic = st.text_input("Content Topic / Context", placeholder="e.g., Q3 Keynote Address")
@@ -346,7 +373,7 @@ with st.sidebar.expander("📤 Scoped Post Ingestion"):
                             try: computed_dm_reach += float(c_pct.replace('%', ''))
                             except: pass
 
-                # Map directly to the mapped profile record id in Airtable
+                # Map directly to target profile record id in Airtable
                 profile_record_id = None
                 for p_rec in raw_profiles_raw:
                     if p_rec['fields'].get('Full Name') == target_upload_profile:
@@ -435,7 +462,7 @@ def generate_team_progress_pdf(df_source, trends_df, manager_notes, horizon_str,
     </style></head><body>
         <div class='header'>
             {logo_html}
-            <h1>{company_name} — Portfolio Progress Report</h1>
+            <h1>{company_name} — Executive Portfolio Progress Report</h1>
             <p class='subtitle'>Combined Standings Tracker & Performance Horizons Index — __HORIZON__</p>
         </div>
         <div style='display: table; width: 100%; margin-bottom: 12px;'>
@@ -553,7 +580,7 @@ def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, se
     <!DOCTYPE html><html><head><meta charset='utf-8'><style>
         @page {{ size: A4; margin: 15mm 15mm; background-color: #f8fafc; }}
         body {{ font-family: Arial, sans-serif; color: #1e293b; font-size: 10pt; line-height: 1.5; }}
-        .header {{ background: #1e3a8a; color: white; padding: 20px; border-radius: 6px; margin-bottom: 20px; border-left: 6px solid {brand_color}; }}
+        .header {{ background: #0f172a; color: white; padding: 20px; border-radius: 6px; margin-bottom: 20px; border-left: 6px solid {brand_color}; }}
         h1 {{ margin: 0; font-size: 18pt; }} .title {{ color: #bfdbfe; margin: 2px 0 0 0; }}
         .card {{ background: white; padding: 16px; border: 1px solid #e2e8f0; border-top: 4px solid {brand_color}; margin-bottom: 15px; border-radius: 4px; }}
         .val {{ font-size: 22pt; font-weight: bold; color: #0f172a; margin-bottom: 5px; }}
@@ -818,7 +845,7 @@ with tab_team:
         'Profile views': 'sum',
         'Appearances': 'sum',
         'SSI': 'mean'
-    }).sort_index()
+    }).sort_index() if not df_metrics.empty else pd.DataFrame(columns=['Total followers', 'Profile views', 'Appearances', 'SSI'])
 
     if st.button("🛠️ Compile Portfolio PDF Report"):
         try:
@@ -858,28 +885,35 @@ with tab_team:
     st.markdown("---")
     st.subheader("📊 Combined Team Macro-Trend Vectors (All-Time History)")
 
-    tc1, tc2 = st.columns(2)
-    with tc1:
-        st.caption("👥 Combined Follower Growth")
-        st.line_chart(team_trends_df[['Total followers']], color=client_brand_color)
-        st.caption("🔍 Combined Platform-Wide Visibility")
-        st.line_chart(team_trends_df[['Appearances']], color="#ff9900")
-    with tc2:
-        st.caption("👀 Combined Profile Views")
-        st.line_chart(team_trends_df[['Profile views']], color="#1db954")
-        st.caption("📈 Rolling Average Social Selling Index (SSI)")
-        st.line_chart(team_trends_df[['SSI']], color="#dc2626")
+    if not team_trends_df.empty:
+        tc1, tc2 = st.columns(2)
+        with tc1:
+            st.caption("👥 Combined Follower Growth")
+            st.line_chart(team_trends_df[['Total followers']], color=client_brand_color)
+            st.caption("🔍 Combined Platform-Wide Visibility")
+            st.line_chart(team_trends_df[['Appearances']], color="#ff9900")
+        with tc2:
+            st.caption("👀 Combined Profile Views")
+            st.line_chart(team_trends_df[['Profile views']], color="#1db954")
+            st.caption("📈 Rolling Average Social Selling Index (SSI)")
+            st.line_chart(team_trends_df[['SSI']], color="#dc2626")
+    else:
+        st.info("No historical metrics exist to display combined team curves yet.")
 
     st.markdown("---")
     st.markdown("### 📋 Detailed Cross-Profile Leaderboard")
     display_team_df = df_team_standings.copy()
     display_team_df['Manager Remarks'] = display_team_df['Profile Name'].map(lambda x: st.session_state.manager_notes.get(x, ""))
-    st.dataframe(
-        display_team_df.set_index('Profile Name')[
-            ['Job Title', 'Followers', 'Followers MoM%', 'Followers Inc Growth', 'SSI', 'SSI MoM Shift', 'SSI Inc Shift', 'Posts Published', 'Views', 'Appearances', 'Manager Remarks']
-        ],
-        use_container_width=True
-    )
+    
+    if not display_team_df.empty:
+        st.dataframe(
+            display_team_df.set_index('Profile Name')[
+                ['Job Title', 'Followers', 'Followers MoM%', 'Followers Inc Growth', 'SSI', 'SSI MoM Shift', 'SSI Inc Shift', 'Posts Published', 'Views', 'Appearances', 'Manager Remarks']
+            ],
+            use_container_width=True
+        )
+    else:
+        st.info("Log metrics inside Airtable to activate the interactive leaderboard standings.")
 
 
 # ==========================================
@@ -889,7 +923,7 @@ with tab_individual:
     matching_profile_rows = df_team_standings[df_team_standings['Profile Name'] == selected_profile] if not df_team_standings.empty else pd.DataFrame()
 
     if matching_profile_rows.empty:
-        st.info(f"📅 No metrics tracking matrices could be mapped out for **{selected_profile}** during this reporting horizon.")
+        st.info(f"📅 No metrics tracking matrices could be mapped out for **{selected_profile}** during this reporting horizon. Add history records in Airtable or process an organic post export to activate this space.")
     else:
         prof_row = matching_profile_rows.iloc[0]
         profile_metrics = df_metrics[df_metrics['Profile Name'] == selected_profile].sort_values('Date')
