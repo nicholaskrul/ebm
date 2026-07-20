@@ -6,7 +6,7 @@ import io
 import requests
 from urllib3.util import Retry
 from requests.adapters import HTTPAdapter
-# Switched from global pyplot to pure object-oriented thread-safe Figure elements
+# Pure object-oriented thread-safe Figure elements
 from matplotlib.figure import Figure
 import base64
 from weasyprint import HTML
@@ -30,7 +30,6 @@ if not AIRTABLE_TOKEN or not BASE_ID:
 # Initialize the standard API client
 api = Api(AIRTABLE_TOKEN)
 
-# Build an enterprise retry framework to completely bypass Airtable 5req/sec limits
 retries = Retry(
     total=5,
     backoff_factor=1,
@@ -47,7 +46,6 @@ class TimeoutHTTPAdapter(HTTPAdapter):
         kwargs.setdefault("timeout", self.timeout)
         return super().send(request, **kwargs)
 
-# Inject the rate-limit protector + timeout directly into pyairtable's session
 api.session.mount("https://", TimeoutHTTPAdapter(max_retries=retries, timeout=30))
 
 # Define tables
@@ -57,15 +55,21 @@ metrics_table = api.table(BASE_ID, "Weekly Metrics")
 posts_table = api.table(BASE_ID, "Posts and content")
 
 
-# --- 3. DATA RECONCILIATION & PIPELINE ENGINE (Multi-Tenant Relational Resolver) ---
-@st.cache_data(ttl=600)
-def load_all_data():
-    raw_companies = companies_table.all()
-    raw_profiles = profiles_table.all()
-    raw_metrics = metrics_table.all()
-    raw_posts = posts_table.all()
+# --- 3. DATA RECONCILIATION ENGINE (API-Optimized Field Slicing) ---
+@st.cache_data(ttl=86400, show_spinner=False)  # 24-hour persistent cache
+def fetch_raw_airtable_data():
+    # Pass explicit field lists to reduce HTTP payload size and processing time
+    raw_companies = companies_table.all(fields=['Company Name', 'Name', 'Brand Color', 'Hex Color', 'Logo URL'])
+    raw_profiles = profiles_table.all(fields=['Full Name', 'Job Title', 'Company', 'Company Name'])
+    raw_metrics = metrics_table.all(fields=['Profile', 'Date', 'Total followers', 'SSI', 'Profile views', 'Appearances'])
+    raw_posts = posts_table.all(fields=[
+        'Profile', 'Publish Date', 'Topic', 'Post URL', 'Impressions', 'Reactions', 
+        'Comments', 'Profile Visitors From Post', 'Members Reached', 'Followers Gained From Post', 
+        'Reposts', 'Saves', 'Sends on LinkedIn', 'Decision-Maker Reach %', 
+        'Top Target Accounts', 'Top Core Industries'
+    ])
 
-    # 1. Map Company IDs to metadata details (with default column fallbacks)
+    # 1. Map Company IDs to metadata details
     id_to_company = {}
     for r in raw_companies:
         fields = r['fields']
@@ -103,7 +107,7 @@ def load_all_data():
             'Logo URL': comp_info['Logo URL']
         }
 
-    # 3. Process Metrics Dataset with complete tenant metadata
+    # 3. Process Metrics Dataset
     metrics_data = []
     for r in raw_metrics:
         fields = r['fields'].copy()
@@ -140,7 +144,7 @@ def load_all_data():
     else:
         df_m = pd.DataFrame(columns=['Profile Name', 'Job Title', 'Company Name', 'Brand Color', 'Logo URL', 'Date', 'Total followers', 'SSI', 'Profile views', 'Appearances'])
 
-    # 4. Process Content Logs Dataset with complete tenant metadata
+    # 4. Process Content Logs Dataset
     posts_data = []
     for r in raw_posts:
         fields = r['fields'].copy()
@@ -196,23 +200,43 @@ def load_all_data():
             'Decision-Maker Reach %', 'Top Target Accounts', 'Top Core Industries', 'Topic'
         ])
 
-    # 5. Prevent "Cold Start" bug by pulling active companies directly from master table records
     all_companies = sorted(list(set([info['Company Name'] for info in id_to_company.values() if info['Company Name'] != 'Unknown Company'])))
 
     return df_m, df_p, raw_profiles, all_companies
 
 
-# Load master pipeline data
-with st.spinner("⚡ Connecting to Airtable and fetching fresh multi-tenant metrics..."):
-    try:
-        df_metrics_raw, df_posts_raw, raw_profiles_raw, all_companies_list = load_all_data()
-        st.sidebar.success("⚡ Live Database Sync Active")
-    except Exception as e:
-        st.error(f"❌ Connection Mapping Breakpoint Encountered: {e}")
-        st.stop()
+# --- 4. SESSION-STATE PERSISTENT CACHE MANAGER ---
+# Keeps data in session memory so navigation/reruns consume 0 API requests
+if "db_initialized" not in st.session_state:
+    with st.spinner("⚡ Initializing database session from Airtable..."):
+        try:
+            df_m_raw, df_p_raw, raw_prof_raw, companies_list = fetch_raw_airtable_data()
+            st.session_state.df_metrics_raw = df_m_raw
+            st.session_state.df_posts_raw = df_p_raw
+            st.session_state.raw_profiles_raw = raw_prof_raw
+            st.session_state.all_companies_list = companies_list
+            st.session_state.db_initialized = True
+        except Exception as e:
+            st.error(f"❌ Connection Mapping Breakpoint Encountered: {e}")
+            st.stop()
 
-# --- 4. GLOBAL MULTI-TENANT FILTER & SCOPING CONTROLLER ---
+# Assign session state objects to local references
+df_metrics_raw = st.session_state.df_metrics_raw
+df_posts_raw = st.session_state.df_posts_raw
+raw_profiles_raw = st.session_state.raw_profiles_raw
+all_companies_list = st.session_state.all_companies_list
+
+
+# --- 5. GLOBAL MULTI-TENANT FILTER & SCOPING CONTROLLER ---
 st.sidebar.title("🏢 Agency Control Panel")
+
+# Manual API Refresh Trigger (Only fetches when clicked)
+if st.sidebar.button("🔄 Sync Fresh Airtable Data", use_container_width=True):
+    st.cache_data.clear()
+    del st.session_state.db_initialized
+    st.rerun()
+
+st.sidebar.markdown("---")
 
 if not all_companies_list:
     st.error("❌ No valid companies found in your database mapping. Add a company to your Companies table in Airtable first.")
@@ -220,7 +244,7 @@ if not all_companies_list:
 
 selected_company = st.sidebar.selectbox("🎯 Select Client Portfolio", all_companies_list)
 
-# Scope database tables dynamically to selected company
+# Scope database tables dynamically
 df_metrics = df_metrics_raw[df_metrics_raw['Company Name'] == selected_company].copy()
 df_posts = df_posts_raw[df_posts_raw['Company Name'] == selected_company].copy()
 
@@ -229,7 +253,6 @@ if not df_metrics.empty:
     client_brand_color = df_metrics['Brand Color'].iloc[0] if 'Brand Color' in df_metrics.columns else '#0a66c2'
     client_logo_url = df_metrics['Logo URL'].iloc[0] if 'Logo URL' in df_metrics.columns and pd.notna(df_metrics['Logo URL'].iloc[0]) else ''
 else:
-    # If a brand-new company has zero records inside df_metrics yet (cold start), resolve branding from the raw loader mapping
     client_brand_color = '#0a66c2'
     client_logo_url = ''
     for r in raw_profiles_raw:
@@ -239,7 +262,7 @@ else:
             client_logo_url = fields.get('Logo URL', '')
             break
 
-# Dynamic white-label CSS properties injection
+# Dynamic CSS injection
 st.markdown(f'''
 <style>
     [data-testid="stMetricValue"] {{ font-size: 26px; font-weight: bold; }}
@@ -257,9 +280,7 @@ else:
     available_months = [pd.Period(datetime.today().strftime('%Y-%m'), freq='M')]
     all_profiles_list = []
 
-# Scoped profiles mapping safeguards
 if not all_profiles_list:
-    # Populate profiles assigned to this company even if they have no metrics logs yet
     all_profiles_list = sorted([
         r['fields'].get('Full Name', 'Unknown') 
         for r in raw_profiles_raw 
@@ -275,7 +296,7 @@ selected_ym = st.sidebar.selectbox("📅 Reporting Horizon", available_months, f
 selected_profile = st.sidebar.selectbox("👤 Executive Focus", all_profiles_list)
 
 
-# --- 5. STATE MANAGEMENT & CROSS-TAB INPUT SYNCHRONIZATION ---
+# --- 6. STATE MANAGEMENT & CROSS-TAB INPUT SYNCHRONIZATION ---
 if "manager_notes" not in st.session_state:
     st.session_state.manager_notes = {}
 
@@ -298,7 +319,7 @@ def sync_from_ind(name):
     st.session_state[f"team_notes_{name}"] = val
 
 
-# --- 6. SCOPED POST INGESTION ENGINE ---
+# --- 7. SCOPED POST INGESTION ENGINE (Zero-Read Local Injection) ---
 with st.sidebar.expander("📤 Scoped Post Ingestion"):
     st.markdown("### Process Single-Post Export")
     target_upload_profile = st.selectbox("Assign Post Data To:", all_profiles_list, key="upload_exec_select")
@@ -372,7 +393,6 @@ with st.sidebar.expander("📤 Scoped Post Ingestion"):
                             try: computed_dm_reach += float(c_pct.replace('%', ''))
                             except: pass
 
-                # Map directly to target profile record id in Airtable
                 profile_record_id = None
                 for p_rec in raw_profiles_raw:
                     if p_rec['fields'].get('Full Name') == target_upload_profile:
@@ -398,9 +418,25 @@ with st.sidebar.expander("📤 Scoped Post Ingestion"):
                     "Top Core Industries": ", ".join(industries[:3])
                 }
 
+                # 1. WRITE CALL TO AIRTABLE (1 API Call)
                 posts_table.create(payload)
-                st.sidebar.success("🎉 Ingestion complete! Refreshing...")
-                st.cache_data.clear()
+
+                # 2. LOCAL IN-MEMORY INJECTION (0 API Calls - saves 20+ read calls)
+                new_post_row = payload.copy()
+                new_post_row['Profile Name'] = target_upload_profile
+                new_post_row['Company Name'] = selected_company
+                new_post_row['Brand Color'] = client_brand_color
+                new_post_row['Logo URL'] = client_logo_url
+                new_post_row['Publish Date'] = pd.to_datetime(clean_date)
+                new_post_row['YearMonth'] = pd.to_datetime(clean_date).to_period('M')
+                new_post_row['Engagement'] = new_post_row['Reactions'] + new_post_row['Comments'] + new_post_row['Reposts']
+
+                st.session_state.df_posts_raw = pd.concat(
+                    [st.session_state.df_posts_raw, pd.DataFrame([new_post_row])], 
+                    ignore_index=True
+                )
+
+                st.sidebar.success("🎉 Ingestion complete! Post written to Airtable & injected locally.")
                 st.rerun()
             except Exception as parse_ex:
                 error_details = str(parse_ex)
@@ -409,7 +445,7 @@ with st.sidebar.expander("📤 Scoped Post Ingestion"):
                 st.sidebar.error(f"Ingestion break: {error_details}")
 
 
-# --- 7. GRAPH ENGINE BASE64 EXPORT UTILITY (Thread-Isolated Figures) ---
+# --- 8. GRAPH ENGINE BASE64 EXPORT UTILITY ---
 def export_plot_to_b64(df_source, column_name, chart_type='line', color='#0a66c2'):
     if df_source.empty or column_name not in df_source.columns:
         return ""
@@ -436,7 +472,7 @@ def export_plot_to_b64(df_source, column_name, chart_type='line', color='#0a66c2
     return f"data:image/png;base64,{base64.b64encode(img_buf.read()).decode('utf-8')}"
 
 
-# --- 8. CACHED PDF REPORT COMPILERS (White-Labeled & Brand-Aware) ---
+# --- 9. CACHED PDF REPORT COMPILERS ---
 def generate_team_progress_pdf(df_source, trends_df, manager_notes, horizon_str, company_name, brand_color, logo_url):
     logo_html = f"<img src='{logo_url}' style='height: 45px; max-width: 200px; float: right; margin-top: -5px;'>" if logo_url else ""
     
@@ -764,7 +800,7 @@ def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, se
     return buf.getvalue()
 
 
-# --- 9. CROSS-PROFILE LEADERBOARD STANDINGS ---
+# --- 10. CROSS-PROFILE LEADERBOARD STANDINGS ---
 def compute_profile_standings(df_metrics_source, df_posts_source, target_profiles, selected_ym_target):
     rows = []
     for name in target_profiles:
@@ -809,7 +845,6 @@ def compute_profile_standings(df_metrics_source, df_posts_source, target_profile
             'Appearances': current['Appearances'],
         })
 
-    # Return structured empty DataFrame to avoid downstream KeyError crashes
     if not rows:
         return pd.DataFrame(columns=[
             'Profile Name', 'Job Title', 'Followers', 'Followers MoM%', 
@@ -820,10 +855,9 @@ def compute_profile_standings(df_metrics_source, df_posts_source, target_profile
     return pd.DataFrame(rows)
 
 
-# Process the scoped standings table
 df_team_standings = compute_profile_standings(df_metrics, df_posts, all_profiles_list, selected_ym)
 
-# --- 10. TAB LAYOUT ---
+# --- 11. TAB LAYOUT ---
 tab_team, tab_individual = st.tabs(["👥 Team Overview", "🎯 Individual Deep Dive"])
 
 
@@ -876,7 +910,6 @@ with tab_team:
 
     st.markdown("---")
     
-    # Safe metrics computations
     total_followers = df_team_standings['Followers'].sum() if not df_team_standings.empty else 0
     mean_ssi = df_team_standings['SSI'].mean() if not df_team_standings.empty else 0
     safe_ssi = int(mean_ssi) if pd.notna(mean_ssi) else 0
@@ -911,7 +944,6 @@ with tab_team:
     st.markdown("### 📋 Detailed Cross-Profile Leaderboard")
     display_team_df = df_team_standings.copy()
     
-    # Empty DataFrame verification guardrail against KeyErrors
     if not display_team_df.empty:
         display_team_df['Manager Remarks'] = display_team_df['Profile Name'].map(lambda x: st.session_state.manager_notes.get(x, ""))
         st.dataframe(
