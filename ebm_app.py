@@ -405,7 +405,7 @@ with st.sidebar.expander("📤 Scoped Post Ingestion"):
                 except: clean_date = datetime.today().strftime('%Y-%m-%d')
 
                 companies_list_from_file, industries = [], []
-                computed_dm_reach = 0.0
+                computed__reach = 0.0
                 decision_tiers = ['Director', 'VP', 'CXO', 'Owner', 'Partner']
 
                 if 'Pct' in df_upload.columns:
@@ -676,7 +676,7 @@ def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, se
 
         <div class='card' style='border-top-color: #7c3aed;'>
             <strong>Audience Quality & Account Intelligence Index</strong><br>
-            • Average Decision-Maker Reach Tier: <strong>__DM_REACH__%</strong><br>
+            • Average Decision-Maker Reach Tier: <strong>__Decision_Maker_REACH__%</strong><br>
             • Key Target Accounts Engaged: <em>__TARGET_ACCOUNTS__</em><br>
             • Primary Industry Heatmaps: <em>__TARGET_INDUSTRIES__</em><br>
             • Content High-Intent Signals: <strong>__SAVED_SHARED__ Actions (Saves/Sends/Reposts)</strong>
@@ -1173,9 +1173,9 @@ with tab_individual:
                 st.markdown(f"### 📋 Granular Post Performance Tracking ({horizon_desc})")
                 if not content_posts_filtered.empty:
                     display_posts = content_posts_filtered.copy().sort_values('Publish Date', ascending=False)
-                    display_posts['DM Reach'] = display_posts['Decision-Maker Reach %'].map(lambda x: f"{x*100:.1f}%")
+                    display_posts['Decision Maker Reach'] = display_posts['Decision-Maker Reach %'].map(lambda x: f"{x*100:.1f}%")
                     st.dataframe(
-                        display_posts[['Publish Date', 'Topic', 'Impressions', 'Reactions', 'Comments', 'Reposts', 'Saves', 'Sends on LinkedIn', 'DM Reach', 'Top Target Accounts']],
+                        display_posts[['Publish Date', 'Topic', 'Impressions', 'Reactions', 'Comments', 'Reposts', 'Saves', 'Sends on LinkedIn', 'Decision Maker Reach', 'Top Target Accounts']],
                         use_container_width=True,
                         hide_index=True
                     )
