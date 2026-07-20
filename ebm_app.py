@@ -58,7 +58,6 @@ posts_table = api.table(BASE_ID, "Posts and content")
 # --- 3. DATA RECONCILIATION ENGINE (Dynamic Schema Resolver) ---
 @st.cache_data(ttl=86400, show_spinner=False)  # 24-hour persistent cache
 def fetch_raw_airtable_data():
-    # Fetch all fields to safely support dynamic column fallback rules
     raw_companies = companies_table.all()
     raw_profiles = profiles_table.all()
     raw_metrics = metrics_table.all()
@@ -201,7 +200,6 @@ def fetch_raw_airtable_data():
 
 
 # --- 4. SESSION-STATE PERSISTENT CACHE MANAGER ---
-# Keeps data in session memory so navigation/reruns consume 0 API requests
 if "db_initialized" not in st.session_state:
     with st.spinner("⚡ Initializing database session from Airtable..."):
         try:
@@ -225,7 +223,7 @@ all_companies_list = st.session_state.all_companies_list
 # --- 5. GLOBAL MULTI-TENANT FILTER & SCOPING CONTROLLER ---
 st.sidebar.title("🏢 Agency Control Panel")
 
-# Manual API Refresh Trigger (Only fetches when clicked)
+# Manual API Refresh Trigger
 if st.sidebar.button("🔄 Sync Fresh Airtable Data", use_container_width=True):
     st.cache_data.clear()
     del st.session_state.db_initialized
@@ -257,7 +255,6 @@ else:
             client_logo_url = fields.get('Logo URL', '')
             break
 
-# Dynamic CSS injection
 st.markdown(f'''
 <style>
     [data-testid="stMetricValue"] {{ font-size: 26px; font-weight: bold; }}
@@ -266,22 +263,39 @@ st.markdown(f'''
 </style>
 ''', unsafe_allow_html=True)
 
-# Timelines scoping
+# --- UNIFIED TIMELINE & PROFILE SCOPING ENGINE ---
+# Combines months from BOTH metrics and posts datasets so post-only months appear
 if not df_metrics.empty:
     df_metrics['YearMonth'] = df_metrics['Date'].dt.to_period('M')
-    available_months = sorted(df_metrics['YearMonth'].dropna().unique(), reverse=True)
-    all_profiles_list = sorted(df_metrics['Profile Name'].unique())
+    months_from_metrics = df_metrics['YearMonth'].dropna().unique().tolist()
+    profiles_from_metrics = df_metrics['Profile Name'].unique().tolist()
+else:
+    months_from_metrics = []
+    profiles_from_metrics = []
+
+if not df_posts.empty and 'YearMonth' in df_posts.columns:
+    months_from_posts = df_posts['YearMonth'].dropna().unique().tolist()
+    profiles_from_posts = df_posts['Profile Name'].unique().tolist()
+else:
+    months_from_posts = []
+    profiles_from_posts = []
+
+# Combine unique reporting months across both datasets
+all_unique_months = set(months_from_metrics + months_from_posts)
+if all_unique_months:
+    available_months = sorted(list(all_unique_months), reverse=True)
 else:
     available_months = [pd.Period(datetime.today().strftime('%Y-%m'), freq='M')]
-    all_profiles_list = []
 
-if not all_profiles_list:
-    all_profiles_list = sorted([
-        r['fields'].get('Full Name', 'Unknown') 
-        for r in raw_profiles_raw 
-        if r['fields'].get('Company Name') == selected_company or 
-        (r['fields'].get('Company') and len(r['fields'].get('Company')) > 0)
-    ])
+# Combine unique profiles across metrics, posts, and raw company profiles
+profiles_from_raw = [
+    r['fields'].get('Full Name', 'Unknown') 
+    for r in raw_profiles_raw 
+    if r['fields'].get('Company Name') == selected_company or 
+    (r['fields'].get('Company') and len(r['fields'].get('Company')) > 0)
+]
+
+all_profiles_list = sorted(list(set(profiles_from_metrics + profiles_from_posts + profiles_from_raw)))
 
 if not all_profiles_list:
     st.warning(f"⚠️ No executive profiles have been linked to **{selected_company}** yet.")
@@ -413,10 +427,8 @@ with st.sidebar.expander("📤 Scoped Post Ingestion"):
                     "Top Core Industries": ", ".join(industries[:3])
                 }
 
-                # 1. WRITE CALL TO AIRTABLE (1 API Call)
                 posts_table.create(payload)
 
-                # 2. LOCAL IN-MEMORY INJECTION (0 API Calls - saves 20+ read calls)
                 new_post_row = payload.copy()
                 new_post_row['Profile Name'] = target_upload_profile
                 new_post_row['Company Name'] = selected_company
@@ -695,7 +707,7 @@ def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, se
     </body></html>
     """
     comment_html = manager_notes_str.replace("\n", "<br>") if manager_notes_str else "<em>No remarks logged.</em>"
-    hist_metrics_clean = hist_metrics.groupby('Date').last()
+    hist_metrics_clean = hist_metrics.groupby('Date').last() if not hist_metrics.empty else pd.DataFrame()
 
     b64_ind_fol = export_plot_to_b64(hist_metrics_clean, 'Total followers', 'line', brand_color)
     b64_ind_ssi = export_plot_to_b64(hist_metrics_clean, 'SSI', 'line', '#dc2626')
@@ -795,35 +807,43 @@ def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, se
     return buf.getvalue()
 
 
-# --- 10. CROSS-PROFILE LEADERBOARD STANDINGS ---
+# --- 10. CROSS-PROFILE LEADERBOARD STANDINGS ENGINE ---
 def compute_profile_standings(df_metrics_source, df_posts_source, target_profiles, selected_ym_target):
     rows = []
     for name in target_profiles:
-        pm = df_metrics_source[df_metrics_source['Profile Name'] == name].sort_values('Date')
+        pm = df_metrics_source[df_metrics_source['Profile Name'] == name].sort_values('Date') if not df_metrics_source.empty else pd.DataFrame()
+
+        # If no weekly metric logs exist for this executive yet, provide baseline zero values
         if pm.empty:
-            continue
+            job_title = 'Executive'
+            followers_curr, followers_mom, followers_inc = 0, 0.0, 0
+            ssi_curr, ssi_mom, ssi_inc = 0, 0, 0
+            views_curr, app_curr = 0, 0
+        else:
+            job_title = pm['Job Title'].iloc[-1] if 'Job Title' in pm.columns else 'Executive'
+            first = pm.iloc[0]
 
-        job_title = pm['Job Title'].iloc[-1] if 'Job Title' in pm.columns else 'Executive'
-        first = pm.iloc[0]
+            current_rows = pm[pm['YearMonth'] == selected_ym_target]
+            # Fall back to latest available metric entry if current month has no metric row logged
+            current = current_rows.iloc[-1] if not current_rows.empty else pm.iloc[-1]
 
-        current_rows = pm[pm['YearMonth'] == selected_ym_target]
-        current = current_rows.iloc[-1] if not current_rows.empty else pm.iloc[-1]
+            prev_rows = pm[pm['YearMonth'] == (selected_ym_target - 1)]
+            prev = prev_rows.iloc[-1] if not prev_rows.empty else None
 
-        prev_rows = pm[pm['YearMonth'] == (selected_ym_target - 1)]
-        prev = prev_rows.iloc[-1] if not prev_rows.empty else None
+            followers_curr = current['Total followers']
+            followers_prev = prev['Total followers'] if prev is not None else followers_curr
+            followers_mom = ((followers_curr - followers_prev) / followers_prev * 100) if followers_prev else 0.0
+            followers_inc = followers_curr - first['Total followers']
 
-        followers_curr = current['Total followers']
-        followers_prev = prev['Total followers'] if prev is not None else followers_curr
-        followers_mom = ((followers_curr - followers_prev) / followers_prev * 100) if followers_prev else 0.0
-        followers_inc = followers_curr - first['Total followers']
-
-        ssi_curr = current['SSI']
-        ssi_prev = prev['SSI'] if prev is not None else ssi_curr
-        ssi_mom = ssi_curr - ssi_prev
-        ssi_inc = ssi_curr - first['SSI']
+            ssi_curr = current['SSI']
+            ssi_prev = prev['SSI'] if prev is not None else ssi_curr
+            ssi_mom = ssi_curr - ssi_prev
+            ssi_inc = ssi_curr - first['SSI']
+            views_curr = current['Profile views']
+            app_curr = current['Appearances']
 
         posts_count = 0
-        if not df_posts_source.empty:
+        if not df_posts_source.empty and 'YearMonth' in df_posts_source.columns:
             posts_count = len(df_posts_source[(df_posts_source['Profile Name'] == name) & (df_posts_source['YearMonth'] == selected_ym_target)])
 
         rows.append({
@@ -836,8 +856,8 @@ def compute_profile_standings(df_metrics_source, df_posts_source, target_profile
             'SSI MoM Shift': ssi_mom,
             'SSI Inc Shift': ssi_inc,
             'Posts Published': posts_count,
-            'Views': current['Profile views'],
-            'Appearances': current['Appearances'],
+            'Views': views_curr,
+            'Appearances': app_curr,
         })
 
     if not rows:
@@ -962,11 +982,11 @@ with tab_individual:
         st.info(f"📅 No metrics tracking matrices could be mapped out for **{selected_profile}** during this reporting horizon. Add history records in Airtable or process an organic post export to activate this space.")
     else:
         prof_row = matching_profile_rows.iloc[0]
-        profile_metrics = df_metrics[df_metrics['Profile Name'] == selected_profile].sort_values('Date')
-        current_month_data = profile_metrics[profile_metrics['YearMonth'] == selected_ym]
+        profile_metrics = df_metrics[df_metrics['Profile Name'] == selected_profile].sort_values('Date') if not df_metrics.empty else pd.DataFrame()
+        current_month_data = profile_metrics[profile_metrics['YearMonth'] == selected_ym] if not profile_metrics.empty else pd.DataFrame()
 
-        individual_posts = df_posts[df_posts['Profile Name'] == selected_profile].copy()
-        month_posts = individual_posts[individual_posts['YearMonth'] == selected_ym]
+        individual_posts = df_posts[df_posts['Profile Name'] == selected_profile].copy() if not df_posts.empty else pd.DataFrame()
+        month_posts = individual_posts[individual_posts['YearMonth'] == selected_ym] if not individual_posts.empty and 'YearMonth' in individual_posts.columns else pd.DataFrame()
 
         avg_dm_reach = month_posts['Decision-Maker Reach %'].mean() * 100 if not month_posts.empty and 'Decision-Maker Reach %' in month_posts.columns else 0.0
         total_saves = month_posts['Saves'].sum() if not month_posts.empty and 'Saves' in month_posts.columns else 0
@@ -1054,19 +1074,22 @@ with tab_individual:
             st.markdown("---")
             st.subheader("📊 Core Strategic Performance Vectors (All-Time History)")
 
-            profile_metrics_clean = profile_metrics.groupby('Date').last()
+            if not profile_metrics.empty:
+                profile_metrics_clean = profile_metrics.groupby('Date').last()
 
-            ic1, ic2 = st.columns(2)
-            with ic1:
-                st.caption("📈 Total Followers")
-                st.line_chart(profile_metrics_clean[['Total followers']], color=client_brand_color)
-                st.caption("🔍 Platform-Wide Profile Appearances")
-                st.line_chart(profile_metrics_clean[['Appearances']], color="#ff9900")
-            with ic2:
-                st.caption("🛡️ Social Selling Index (SSI) Tracker")
-                st.line_chart(profile_metrics_clean[['SSI']], color="#dc2626")
-                st.caption("👀 Profile Views")
-                st.line_chart(profile_metrics_clean[['Profile views']], color="#1db954")
+                ic1, ic2 = st.columns(2)
+                with ic1:
+                    st.caption("📈 Total Followers")
+                    st.line_chart(profile_metrics_clean[['Total followers']], color=client_brand_color)
+                    st.caption("🔍 Platform-Wide Profile Appearances")
+                    st.line_chart(profile_metrics_clean[['Appearances']], color="#ff9900")
+                with ic2:
+                    st.caption("🛡️ Social Selling Index (SSI) Tracker")
+                    st.line_chart(profile_metrics_clean[['SSI']], color="#dc2626")
+                    st.caption("👀 Profile Views")
+                    st.line_chart(profile_metrics_clean[['Profile views']], color="#1db954")
+            else:
+                st.info("No weekly metric logs recorded for this executive yet.")
 
             st.markdown("---")
             st.subheader("📝 Monthly Content Performance Logs (Historical Vectors)")
