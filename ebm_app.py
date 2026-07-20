@@ -3,10 +3,10 @@ import pandas as pd
 from pyairtable import Api
 from datetime import datetime
 import io
+import os
 import requests
 from urllib3.util import Retry
 from requests.adapters import HTTPAdapter
-# Pure object-oriented thread-safe Figure elements
 from matplotlib.figure import Figure
 import base64
 from weasyprint import HTML
@@ -27,7 +27,7 @@ if not AIRTABLE_TOKEN or not BASE_ID:
     st.error("❌ Configuration Missing! Define your `AIRTABLE_TOKEN` and `BASE_ID` inside your secret management dashboard.")
     st.stop()
 
-# Initialize the standard API client
+# Initialize API client
 api = Api(AIRTABLE_TOKEN)
 
 retries = Retry(
@@ -55,153 +55,173 @@ metrics_table = api.table(BASE_ID, "Weekly Metrics")
 posts_table = api.table(BASE_ID, "Posts and content")
 
 
-# --- 3. DATA RECONCILIATION ENGINE (Dynamic Schema Resolver) ---
-@st.cache_data(ttl=86400, show_spinner=False)  # 24-hour persistent cache
+# --- 3. DATA RECONCILIATION ENGINE (Disk Backup + Date Filtered) ---
+@st.cache_data(ttl=86400, show_spinner=False)
 def fetch_raw_airtable_data():
-    raw_companies = companies_table.all()
-    raw_profiles = profiles_table.all()
-    raw_metrics = metrics_table.all()
-    raw_posts = posts_table.all()
+    try:
+        # Date filter formulas to pull only last 365 days (limits pagination calls)
+        metrics_filter = "DATETIME_DIFF(TODAY(), {Date}, 'days') <= 365"
+        posts_filter = "DATETIME_DIFF(TODAY(), {Publish Date}, 'days') <= 365"
 
-    # 1. Map Company IDs to metadata details (with default column fallbacks)
-    id_to_company = {}
-    for r in raw_companies:
-        fields = r['fields']
-        resolved_name = fields.get('Company Name') or fields.get('Name') or 'Unknown Company'
-        resolved_color = fields.get('Brand Color') or fields.get('Hex Color') or '#0a66c2'
-        
-        id_to_company[r['id']] = {
-            'Company Name': resolved_name,
-            'Brand Color': resolved_color,
-            'Logo URL': fields.get('Logo URL', '')
-        }
+        raw_companies = companies_table.all()
+        raw_profiles = profiles_table.all()
+        raw_metrics = metrics_table.all(formula=metrics_filter)
+        raw_posts = posts_table.all(formula=posts_filter)
 
-    # 2. Map Profile IDs to Name, Title, and resolved Company metadata
-    profile_map = {}
-    for r in raw_profiles:
-        fields = r['fields']
-        p_id = r['id']
-        name = fields.get('Full Name', 'Unknown')
-        title = fields.get('Job Title', 'Executive')
-        
-        comp_links = fields.get('Company', [])
-        comp_id = comp_links[0] if comp_links else None
-        
-        comp_info = id_to_company.get(comp_id, {
-            'Company Name': 'Unassigned Client',
-            'Brand Color': '#0a66c2',
-            'Logo URL': ''
-        })
-        
-        profile_map[p_id] = {
-            'Full Name': name,
-            'Job Title': title,
-            'Company Name': comp_info['Company Name'],
-            'Brand Color': comp_info['Brand Color'],
-            'Logo URL': comp_info['Logo URL']
-        }
+        # 1. Map Company IDs to metadata details
+        id_to_company = {}
+        for r in raw_companies:
+            fields = r['fields']
+            resolved_name = fields.get('Company Name') or fields.get('Name') or 'Unknown Company'
+            resolved_color = fields.get('Brand Color') or fields.get('Hex Color') or '#0a66c2'
+            
+            id_to_company[r['id']] = {
+                'Company Name': resolved_name,
+                'Brand Color': resolved_color,
+                'Logo URL': fields.get('Logo URL', '')
+            }
 
-    # 3. Process Metrics Dataset with complete tenant metadata
-    metrics_data = []
-    for r in raw_metrics:
-        fields = r['fields'].copy()
-        profile_ids = fields.get('Profile', [])
-        p_id = profile_ids[0] if profile_ids else None
-        
-        p_info = profile_map.get(p_id, {
-            'Full Name': 'Unassigned',
-            'Job Title': 'Executive',
-            'Company Name': 'Unassigned Client',
-            'Brand Color': '#0a66c2',
-            'Logo URL': ''
-        })
-        
-        fields['Profile Name'] = p_info['Full Name']
-        fields['Job Title'] = p_info['Job Title']
-        fields['Company Name'] = p_info['Company Name']
-        fields['Brand Color'] = p_info['Brand Color']
-        fields['Logo URL'] = p_info['Logo URL']
-        metrics_data.append(fields)
+        # 2. Map Profile IDs
+        profile_map = {}
+        for r in raw_profiles:
+            fields = r['fields']
+            p_id = r['id']
+            name = fields.get('Full Name', 'Unknown')
+            title = fields.get('Job Title', 'Executive')
+            
+            comp_links = fields.get('Company', [])
+            comp_id = comp_links[0] if comp_links else None
+            
+            comp_info = id_to_company.get(comp_id, {
+                'Company Name': 'Unassigned Client',
+                'Brand Color': '#0a66c2',
+                'Logo URL': ''
+            })
+            
+            profile_map[p_id] = {
+                'Full Name': name,
+                'Job Title': title,
+                'Company Name': comp_info['Company Name'],
+                'Brand Color': comp_info['Brand Color'],
+                'Logo URL': comp_info['Logo URL']
+            }
 
-    df_m = pd.DataFrame(metrics_data)
-    if not df_m.empty:
-        df_m = df_m.dropna(subset=['Date'])
-        df_m['Date'] = pd.to_datetime(df_m['Date'])
-        ssi_col = [col for col in df_m.columns if col.startswith('SSI')][0] if [col for col in df_m.columns if col.startswith('SSI')] else 'SSI'
-        df_m = df_m.rename(columns={ssi_col: 'SSI'})
+        # 3. Process Metrics Dataset
+        metrics_data = []
+        for r in raw_metrics:
+            fields = r['fields'].copy()
+            profile_ids = fields.get('Profile', [])
+            p_id = profile_ids[0] if profile_ids else None
+            
+            p_info = profile_map.get(p_id, {
+                'Full Name': 'Unassigned',
+                'Job Title': 'Executive',
+                'Company Name': 'Unassigned Client',
+                'Brand Color': '#0a66c2',
+                'Logo URL': ''
+            })
+            
+            fields['Profile Name'] = p_info['Full Name']
+            fields['Job Title'] = p_info['Job Title']
+            fields['Company Name'] = p_info['Company Name']
+            fields['Brand Color'] = p_info['Brand Color']
+            fields['Logo URL'] = p_info['Logo URL']
+            metrics_data.append(fields)
 
-        for metric_col in ['Total followers', 'SSI', 'Profile views', 'Appearances']:
-            if metric_col in df_m.columns:
-                df_m[metric_col] = pd.to_numeric(df_m[metric_col]).fillna(0)
-            else:
-                df_m[metric_col] = 0
-    else:
-        df_m = pd.DataFrame(columns=['Profile Name', 'Job Title', 'Company Name', 'Brand Color', 'Logo URL', 'Date', 'Total followers', 'SSI', 'Profile views', 'Appearances'])
+        df_m = pd.DataFrame(metrics_data)
+        if not df_m.empty:
+            df_m = df_m.dropna(subset=['Date'])
+            df_m['Date'] = pd.to_datetime(df_m['Date'])
+            ssi_col = [col for col in df_m.columns if col.startswith('SSI')][0] if [col for col in df_m.columns if col.startswith('SSI')] else 'SSI'
+            df_m = df_m.rename(columns={ssi_col: 'SSI'})
 
-    # 4. Process Content Logs Dataset with complete tenant metadata
-    posts_data = []
-    for r in raw_posts:
-        fields = r['fields'].copy()
-        profile_ids = fields.get('Profile', [])
-        p_id = profile_ids[0] if profile_ids else None
-        
-        p_info = profile_map.get(p_id, {
-            'Full Name': 'Unassigned',
-            'Job Title': 'Executive',
-            'Company Name': 'Unassigned Client',
-            'Brand Color': '#0a66c2',
-            'Logo URL': ''
-        })
-        
-        fields['Profile Name'] = p_info['Full Name']
-        fields['Company Name'] = p_info['Company Name']
-        fields['Brand Color'] = p_info['Brand Color']
-        fields['Logo URL'] = p_info['Logo URL']
-        posts_data.append(fields)
-
-    df_p = pd.DataFrame(posts_data)
-    if not df_p.empty and 'Publish Date' in df_p.columns:
-        df_p = df_p.dropna(subset=['Publish Date'])
-        df_p['Publish Date'] = pd.to_datetime(df_p['Publish Date'])
-        df_p['YearMonth'] = df_p['Publish Date'].dt.to_period('M')
-
-        numeric_cols = [
-            'Impressions', 'Reactions', 'Comments', 'Profile Visitors From Post',
-            'Members Reached', 'Followers Gained From Post', 'Reposts', 'Saves',
-            'Sends on LinkedIn', 'Decision-Maker Reach %'
-        ]
-        for metric_col in numeric_cols:
-            if metric_col in df_p.columns:
-                df_p[metric_col] = pd.to_numeric(df_p[metric_col]).fillna(0)
-            else:
-                df_p[metric_col] = 0
-
-        if 'Engagement' not in df_p.columns:
-            df_p['Engagement'] = df_p['Reactions'] + df_p['Comments'] + df_p['Reposts']
+            for metric_col in ['Total followers', 'SSI', 'Profile views', 'Appearances']:
+                if metric_col in df_m.columns:
+                    df_m[metric_col] = pd.to_numeric(df_m[metric_col]).fillna(0)
+                else:
+                    df_m[metric_col] = 0
         else:
-            df_p['Engagement'] = pd.to_numeric(df_p['Engagement']).fillna(0)
+            df_m = pd.DataFrame(columns=['Profile Name', 'Job Title', 'Company Name', 'Brand Color', 'Logo URL', 'Date', 'Total followers', 'SSI', 'Profile views', 'Appearances'])
 
-        for text_col in ['Top Target Accounts', 'Top Core Industries', 'Topic']:
-            if text_col not in df_p.columns:
-                df_p[text_col] = ""
+        # 4. Process Content Logs Dataset
+        posts_data = []
+        for r in raw_posts:
+            fields = r['fields'].copy()
+            profile_ids = fields.get('Profile', [])
+            p_id = profile_ids[0] if profile_ids else None
+            
+            p_info = profile_map.get(p_id, {
+                'Full Name': 'Unassigned',
+                'Job Title': 'Executive',
+                'Company Name': 'Unassigned Client',
+                'Brand Color': '#0a66c2',
+                'Logo URL': ''
+            })
+            
+            fields['Profile Name'] = p_info['Full Name']
+            fields['Company Name'] = p_info['Company Name']
+            fields['Brand Color'] = p_info['Brand Color']
+            fields['Logo URL'] = p_info['Logo URL']
+            posts_data.append(fields)
+
+        df_p = pd.DataFrame(posts_data)
+        if not df_p.empty and 'Publish Date' in df_p.columns:
+            df_p = df_p.dropna(subset=['Publish Date'])
+            df_p['Publish Date'] = pd.to_datetime(df_p['Publish Date'])
+            df_p['YearMonth'] = df_p['Publish Date'].dt.to_period('M')
+
+            numeric_cols = [
+                'Impressions', 'Reactions', 'Comments', 'Profile Visitors From Post',
+                'Members Reached', 'Followers Gained From Post', 'Reposts', 'Saves',
+                'Sends on LinkedIn', 'Decision-Maker Reach %'
+            ]
+            for metric_col in numeric_cols:
+                if metric_col in df_p.columns:
+                    df_p[metric_col] = pd.to_numeric(df_p[metric_col]).fillna(0)
+                else:
+                    df_p[metric_col] = 0
+
+            if 'Engagement' not in df_p.columns:
+                df_p['Engagement'] = df_p['Reactions'] + df_p['Comments'] + df_p['Reposts']
             else:
-                df_p[text_col] = df_p[text_col].fillna("")
-    else:
-        df_p = pd.DataFrame(columns=[
-            'Profile Name', 'Company Name', 'Brand Color', 'Logo URL', 'Publish Date', 'YearMonth', 
-            'Impressions', 'Engagement', 'Reactions', 'Comments', 'Profile Visitors From Post', 
-            'Members Reached', 'Followers Gained From Post', 'Reposts', 'Saves', 'Sends on LinkedIn',
-            'Decision-Maker Reach %', 'Top Target Accounts', 'Top Core Industries', 'Topic'
-        ])
+                df_p['Engagement'] = pd.to_numeric(df_p['Engagement']).fillna(0)
 
-    all_companies = sorted(list(set([info['Company Name'] for info in id_to_company.values() if info['Company Name'] != 'Unknown Company'])))
+            for text_col in ['Top Target Accounts', 'Top Core Industries', 'Topic']:
+                if text_col not in df_p.columns:
+                    df_p[text_col] = ""
+                else:
+                    df_p[text_col] = df_p[text_col].fillna("")
+        else:
+            df_p = pd.DataFrame(columns=[
+                'Profile Name', 'Company Name', 'Brand Color', 'Logo URL', 'Publish Date', 'YearMonth', 
+                'Impressions', 'Engagement', 'Reactions', 'Comments', 'Profile Visitors From Post', 
+                'Members Reached', 'Followers Gained From Post', 'Reposts', 'Saves', 'Sends on LinkedIn',
+                'Decision-Maker Reach %', 'Top Target Accounts', 'Top Core Industries', 'Topic'
+            ])
 
-    return df_m, df_p, raw_profiles, all_companies
+        all_companies = sorted(list(set([info['Company Name'] for info in id_to_company.values() if info['Company Name'] != 'Unknown Company'])))
+
+        # --- SAVE DISK CACHE BACKUP (0 API calls on server wake up) ---
+        try:
+            df_m.to_parquet("metrics_disk.parquet")
+            df_p.to_parquet("posts_disk.parquet")
+        except Exception:
+            pass
+
+        return df_m, df_p, raw_profiles, all_companies
+
+    except Exception as ex:
+        # Fallback to local disk if network/API limits block the connection
+        if os.path.exists("metrics_disk.parquet") and os.path.exists("posts_disk.parquet"):
+            df_m = pd.read_parquet("metrics_disk.parquet")
+            df_p = pd.read_parquet("posts_disk.parquet")
+            return df_m, df_p, [], list(df_m['Company Name'].unique())
+        raise ex
 
 
 # --- 4. SESSION-STATE PERSISTENT CACHE MANAGER ---
 if "db_initialized" not in st.session_state:
-    with st.spinner("⚡ Initializing database session from Airtable..."):
+    with st.spinner("⚡ Initializing database session..."):
         try:
             df_m_raw, df_p_raw, raw_prof_raw, companies_list = fetch_raw_airtable_data()
             st.session_state.df_metrics_raw = df_m_raw
@@ -213,7 +233,7 @@ if "db_initialized" not in st.session_state:
             st.error(f"❌ Connection Mapping Breakpoint Encountered: {e}")
             st.stop()
 
-# Assign session state objects to local references
+# Assign session state references
 df_metrics_raw = st.session_state.df_metrics_raw
 df_posts_raw = st.session_state.df_posts_raw
 raw_profiles_raw = st.session_state.raw_profiles_raw
@@ -223,9 +243,11 @@ all_companies_list = st.session_state.all_companies_list
 # --- 5. GLOBAL MULTI-TENANT FILTER & SCOPING CONTROLLER ---
 st.sidebar.title("🏢 Agency Control Panel")
 
-# Manual API Refresh Trigger
+# Manual Refresh Button
 if st.sidebar.button("🔄 Sync Fresh Airtable Data", use_container_width=True):
     st.cache_data.clear()
+    if os.path.exists("metrics_disk.parquet"): os.remove("metrics_disk.parquet")
+    if os.path.exists("posts_disk.parquet"): os.remove("posts_disk.parquet")
     del st.session_state.db_initialized
     st.rerun()
 
@@ -263,8 +285,7 @@ st.markdown(f'''
 </style>
 ''', unsafe_allow_html=True)
 
-# --- UNIFIED TIMELINE & PROFILE SCOPING ENGINE ---
-# Combines months from BOTH metrics and posts datasets so post-only months appear
+# Timelines scoping
 if not df_metrics.empty:
     df_metrics['YearMonth'] = df_metrics['Date'].dt.to_period('M')
     months_from_metrics = df_metrics['YearMonth'].dropna().unique().tolist()
@@ -280,14 +301,12 @@ else:
     months_from_posts = []
     profiles_from_posts = []
 
-# Combine unique reporting months across both datasets
 all_unique_months = set(months_from_metrics + months_from_posts)
 if all_unique_months:
     available_months = sorted(list(all_unique_months), reverse=True)
 else:
     available_months = [pd.Period(datetime.today().strftime('%Y-%m'), freq='M')]
 
-# Combine unique profiles across metrics, posts, and raw company profiles
 profiles_from_raw = [
     r['fields'].get('Full Name', 'Unknown') 
     for r in raw_profiles_raw 
@@ -813,7 +832,6 @@ def compute_profile_standings(df_metrics_source, df_posts_source, target_profile
     for name in target_profiles:
         pm = df_metrics_source[df_metrics_source['Profile Name'] == name].sort_values('Date') if not df_metrics_source.empty else pd.DataFrame()
 
-        # If no weekly metric logs exist for this executive yet, provide baseline zero values
         if pm.empty:
             job_title = 'Executive'
             followers_curr, followers_mom, followers_inc = 0, 0.0, 0
@@ -824,7 +842,6 @@ def compute_profile_standings(df_metrics_source, df_posts_source, target_profile
             first = pm.iloc[0]
 
             current_rows = pm[pm['YearMonth'] == selected_ym_target]
-            # Fall back to latest available metric entry if current month has no metric row logged
             current = current_rows.iloc[-1] if not current_rows.empty else pm.iloc[-1]
 
             prev_rows = pm[pm['YearMonth'] == (selected_ym_target - 1)]
