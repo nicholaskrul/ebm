@@ -59,7 +59,6 @@ posts_table = api.table(BASE_ID, "Posts and content")
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_raw_airtable_data():
     try:
-        # Date filter formulas to pull only last 365 days (limits pagination calls)
         metrics_filter = "DATETIME_DIFF(TODAY(), {Date}, 'days') <= 365"
         posts_filter = "DATETIME_DIFF(TODAY(), {Publish Date}, 'days') <= 365"
 
@@ -201,7 +200,6 @@ def fetch_raw_airtable_data():
 
         all_companies = sorted(list(set([info['Company Name'] for info in id_to_company.values() if info['Company Name'] != 'Unknown Company'])))
 
-        # --- SAVE DISK CACHE BACKUP (0 API calls on server wake up) ---
         try:
             df_m.to_parquet("metrics_disk.parquet")
             df_p.to_parquet("posts_disk.parquet")
@@ -211,7 +209,6 @@ def fetch_raw_airtable_data():
         return df_m, df_p, raw_profiles, all_companies
 
     except Exception as ex:
-        # Fallback to local disk if network/API limits block the connection
         if os.path.exists("metrics_disk.parquet") and os.path.exists("posts_disk.parquet"):
             df_m = pd.read_parquet("metrics_disk.parquet")
             df_p = pd.read_parquet("posts_disk.parquet")
@@ -1109,10 +1106,31 @@ with tab_individual:
                 st.info("No weekly metric logs recorded for this executive yet.")
 
             st.markdown("---")
-            st.subheader("📝 Monthly Content Performance Logs (Historical Vectors)")
+            st.subheader("📝 Content Performance Analysis")
 
+            # NEW: Content Analysis Timeframe Selector (Month / Year / All Time)
             if not individual_posts.empty:
-                monthly_posts_perf = individual_posts.groupby('YearMonth').agg({
+                c_timeframe = st.radio(
+                    "Select Content Horizon:",
+                    ["Selected Month", "Selected Year", "All Time"],
+                    horizontal=True,
+                    key=f"content_tf_{selected_profile}_{selected_company}"
+                )
+
+                if c_timeframe == "Selected Month":
+                    content_posts_filtered = individual_posts[individual_posts['YearMonth'] == selected_ym].copy()
+                    horizon_desc = selected_ym.strftime('%B %Y')
+                    date_fmt = '%m-%d'
+                elif c_timeframe == "Selected Year":
+                    content_posts_filtered = individual_posts[individual_posts['Publish Date'].dt.year == selected_ym.year].copy()
+                    horizon_desc = f"Year {selected_ym.year}"
+                    date_fmt = '%Y-%m-%d'
+                else: # "All Time"
+                    content_posts_filtered = individual_posts.copy()
+                    horizon_desc = "All Time"
+                    date_fmt = '%Y-%m-%d'
+
+                monthly_posts_perf = content_posts_filtered.groupby('YearMonth').agg({
                     'Impressions': 'sum',
                     'Engagement': 'sum'
                 }).sort_index()
@@ -1121,30 +1139,40 @@ with tab_individual:
 
                 pc1, pc2 = st.columns(2)
                 with pc1:
-                    st.caption("📈 Total Organic Post Impressions by Calendar Month")
+                    st.caption(f"📈 Total Organic Post Impressions ({horizon_desc})")
                     st.bar_chart(monthly_posts_perf['Impressions'], color=client_brand_color)
                 with pc2:
-                    st.caption("❤️ Total Post Engagement Interactions by Calendar Month")
+                    st.caption(f"❤️ Total Post Engagement Interactions ({horizon_desc})")
                     st.bar_chart(monthly_posts_perf['Engagement'], color="#1db954")
 
-                st.markdown("### 📊 Single-Post Performance Breakdown (Current Month)")
-                if not month_posts.empty:
+                st.markdown(f"### 📊 Single-Post Performance Breakdown ({horizon_desc})")
+                if not content_posts_filtered.empty:
+                    ui_plot_df = content_posts_filtered.copy().sort_values('Publish Date')
+                    ui_plot_df['Post Label'] = ui_plot_df['Publish Date'].dt.strftime(date_fmt) + " - " + ui_plot_df['Topic'].str.slice(0, 12)
+                    ui_plot_df = ui_plot_df.set_index('Post Label')
+                    
+                    ui_plot_df['Engagement Rate (%)'] = ui_plot_df.apply(
+                        lambda r: (r['Engagement'] / r['Impressions'] * 100) if r['Impressions'] > 0 else 0.0, axis=1
+                    )
+                    denom_f = float(prof_row['Followers']) if float(prof_row['Followers']) > 0 else 1.0
+                    ui_plot_df['Reach (%)'] = (ui_plot_df['Impressions'] / denom_f) * 100
+
                     p_ch1, p_ch2, p_ch3 = st.columns(3)
                     with p_ch1:
                         st.caption("🎯 Organic Reach % per Post (Impressions / Followers)")
-                        st.bar_chart(pdf_plot_df['Reach (%)'], color=client_brand_color)
+                        st.bar_chart(ui_plot_df['Reach (%)'], color=client_brand_color)
                     with p_ch2:
                         st.caption("👥 Unique Members Reached per Post")
-                        st.bar_chart(pdf_plot_df['Members Reached'], color="#ff9900")
+                        st.bar_chart(ui_plot_df['Members Reached'], color="#ff9900")
                     with p_ch3:
                         st.caption("⚡ Engagement Rate % per Post (Engagement / Impressions)")
-                        st.bar_chart(pdf_plot_df['Engagement Rate (%)'], color="#1db954")
+                        st.bar_chart(ui_plot_df['Engagement Rate (%)'], color="#1db954")
                 else:
-                    st.info("No organic analytics matching this month have been ingested to map per-post graphs.")
+                    st.info(f"No organic content found for **{horizon_desc}**.")
 
-                st.markdown("### 📋 Granular Post Performance Tracking")
-                if not month_posts.empty:
-                    display_posts = month_posts.copy()
+                st.markdown(f"### 📋 Granular Post Performance Tracking ({horizon_desc})")
+                if not content_posts_filtered.empty:
+                    display_posts = content_posts_filtered.copy().sort_values('Publish Date', ascending=False)
                     display_posts['DM Reach'] = display_posts['Decision-Maker Reach %'].map(lambda x: f"{x*100:.1f}%")
                     st.dataframe(
                         display_posts[['Publish Date', 'Topic', 'Impressions', 'Reactions', 'Comments', 'Reposts', 'Saves', 'Sends on LinkedIn', 'DM Reach', 'Top Target Accounts']],
@@ -1152,6 +1180,6 @@ with tab_individual:
                         hide_index=True
                     )
                 else:
-                    st.info("No single-post organic analytics have been uploaded for this reporting block yet.")
+                    st.info(f"No single-post organic analytics uploaded for **{horizon_desc}**.")
             else:
                 st.info("No content marketing metrics or post records exist in Airtable to map historical performance curves.")
