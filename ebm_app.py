@@ -55,21 +55,16 @@ metrics_table = api.table(BASE_ID, "Weekly Metrics")
 posts_table = api.table(BASE_ID, "Posts and content")
 
 
-# --- 3. DATA RECONCILIATION ENGINE (API-Optimized Field Slicing) ---
+# --- 3. DATA RECONCILIATION ENGINE (Dynamic Schema Resolver) ---
 @st.cache_data(ttl=86400, show_spinner=False)  # 24-hour persistent cache
 def fetch_raw_airtable_data():
-    # Pass explicit field lists to reduce HTTP payload size and processing time
-    raw_companies = companies_table.all(fields=['Company Name', 'Name', 'Brand Color', 'Hex Color', 'Logo URL'])
-    raw_profiles = profiles_table.all(fields=['Full Name', 'Job Title', 'Company', 'Company Name'])
-    raw_metrics = metrics_table.all(fields=['Profile', 'Date', 'Total followers', 'SSI', 'Profile views', 'Appearances'])
-    raw_posts = posts_table.all(fields=[
-        'Profile', 'Publish Date', 'Topic', 'Post URL', 'Impressions', 'Reactions', 
-        'Comments', 'Profile Visitors From Post', 'Members Reached', 'Followers Gained From Post', 
-        'Reposts', 'Saves', 'Sends on LinkedIn', 'Decision-Maker Reach %', 
-        'Top Target Accounts', 'Top Core Industries'
-    ])
+    # Fetch all fields to safely support dynamic column fallback rules
+    raw_companies = companies_table.all()
+    raw_profiles = profiles_table.all()
+    raw_metrics = metrics_table.all()
+    raw_posts = posts_table.all()
 
-    # 1. Map Company IDs to metadata details
+    # 1. Map Company IDs to metadata details (with default column fallbacks)
     id_to_company = {}
     for r in raw_companies:
         fields = r['fields']
@@ -107,7 +102,7 @@ def fetch_raw_airtable_data():
             'Logo URL': comp_info['Logo URL']
         }
 
-    # 3. Process Metrics Dataset
+    # 3. Process Metrics Dataset with complete tenant metadata
     metrics_data = []
     for r in raw_metrics:
         fields = r['fields'].copy()
@@ -144,7 +139,7 @@ def fetch_raw_airtable_data():
     else:
         df_m = pd.DataFrame(columns=['Profile Name', 'Job Title', 'Company Name', 'Brand Color', 'Logo URL', 'Date', 'Total followers', 'SSI', 'Profile views', 'Appearances'])
 
-    # 4. Process Content Logs Dataset
+    # 4. Process Content Logs Dataset with complete tenant metadata
     posts_data = []
     for r in raw_posts:
         fields = r['fields'].copy()
@@ -855,6 +850,7 @@ def compute_profile_standings(df_metrics_source, df_posts_source, target_profile
     return pd.DataFrame(rows)
 
 
+# Process the scoped standings table
 df_team_standings = compute_profile_standings(df_metrics, df_posts, all_profiles_list, selected_ym)
 
 # --- 11. TAB LAYOUT ---
