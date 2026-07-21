@@ -2,6 +2,7 @@ import base64
 from datetime import datetime
 import io
 import os
+import pickle
 from matplotlib.figure import Figure
 import pandas as pd
 from pyairtable import Api
@@ -12,7 +13,7 @@ from urllib3.util import Retry
 from weasyprint import HTML
 
 # --- 1. APPLICATION CONFIGURATION & VERSIONING ---
-APP_VERSION = "4.5"
+APP_VERSION = "5.0"
 
 st.set_page_config(
     page_title=f"Executive Analytics Hub v{APP_VERSION}",
@@ -63,7 +64,7 @@ metrics_table = api.table(BASE_ID, "Weekly Metrics")
 posts_table = api.table(BASE_ID, "Posts and content")
 
 
-# --- 3. DATA RECONCILIATION ENGINE (Disk Backup + Dynamic Schema Resolver) ---
+# --- 3. DATA RECONCILIATION ENGINE (Hardened Data & Disk Backup) ---
 @st.cache_data(ttl=86400, show_spinner=False)  # 24-hour persistent cache
 def fetch_raw_airtable_data():
   try:
@@ -75,7 +76,7 @@ def fetch_raw_airtable_data():
     raw_metrics = metrics_table.all(formula=metrics_filter)
     raw_posts = posts_table.all(formula=posts_filter)
 
-    # 1. Map Company IDs to metadata details
+    # 1. Map Company IDs to metadata details (with default column fallbacks)
     id_to_company = {}
     for r in raw_companies:
       fields = r["fields"]
@@ -150,11 +151,10 @@ def fetch_raw_airtable_data():
       df_m = df_m.dropna(subset=["Date"])
       df_m["Date"] = pd.to_datetime(df_m["Date"])
       df_m["YearMonth"] = df_m["Date"].dt.to_period("M")
-      ssi_col = (
-          [col for col in df_m.columns if col.startswith("SSI")][0]
-          if [col for col in df_m.columns if col.startswith("SSI")]
-          else "SSI"
-      )
+
+      # Single-pass SSI column resolution
+      ssi_cols = [col for col in df_m.columns if col.startswith("SSI")]
+      ssi_col = ssi_cols[0] if ssi_cols else "SSI"
       df_m = df_m.rename(columns={ssi_col: "SSI"})
 
       for metric_col in [
@@ -164,7 +164,9 @@ def fetch_raw_airtable_data():
           "Appearances",
       ]:
         if metric_col in df_m.columns:
-          df_m[metric_col] = pd.to_numeric(df_m[metric_col]).fillna(0)
+          df_m[metric_col] = (
+              pd.to_numeric(df_m[metric_col], errors="coerce").fillna(0)
+          )
         else:
           df_m[metric_col] = 0
     else:
@@ -228,7 +230,9 @@ def fetch_raw_airtable_data():
       ]
       for metric_col in numeric_cols:
         if metric_col in df_p.columns:
-          df_p[metric_col] = pd.to_numeric(df_p[metric_col]).fillna(0)
+          df_p[metric_col] = (
+              pd.to_numeric(df_p[metric_col], errors="coerce").fillna(0)
+          )
         else:
           df_p[metric_col] = 0
 
@@ -237,7 +241,9 @@ def fetch_raw_airtable_data():
             df_p["Reactions"] + df_p["Comments"] + df_p["Reposts"]
         )
       else:
-        df_p["Engagement"] = pd.to_numeric(df_p["Engagement"]).fillna(0)
+        df_p["Engagement"] = (
+            pd.to_numeric(df_p["Engagement"], errors="coerce").fillna(0)
+        )
 
       for text_col in ["Top Target Accounts", "Top Core Industries", "Topic"]:
         if text_col not in df_p.columns:
@@ -280,22 +286,45 @@ def fetch_raw_airtable_data():
         )
     )
 
+    # Persist data AND metadata to local disk cache for robust fallbacks
     try:
       df_m.to_parquet("metrics_disk.parquet")
       df_p.to_parquet("posts_disk.parquet")
+      with open("metadata_disk.pkl", "wb") as f:
+        pickle.dump(
+            {
+                "raw_profiles": raw_profiles,
+                "profile_map": profile_map,
+                "all_companies": all_companies,
+            },
+            f,
+        )
     except Exception:
       pass
 
     return df_m, df_p, raw_profiles, profile_map, all_companies
 
-  except Exception as ex:
-    if os.path.exists("metrics_disk.parquet") and os.path.exists(
-        "posts_disk.parquet"
+  except requests.exceptions.RequestException as net_ex:
+    # Specifically catch HTTP/Network exceptions to fall back to disk
+    if (
+        os.path.exists("metrics_disk.parquet")
+        and os.path.exists("posts_disk.parquet")
+        and os.path.exists("metadata_disk.pkl")
     ):
       df_m = pd.read_parquet("metrics_disk.parquet")
       df_p = pd.read_parquet("posts_disk.parquet")
-      return df_m, df_p, [], {}, list(df_m["Company Name"].unique())
-    raise ex
+      with open("metadata_disk.pkl", "rb") as f:
+        meta = pickle.load(f)
+      return (
+          df_m,
+          df_p,
+          meta.get("raw_profiles", []),
+          meta.get("profile_map", {}),
+          meta.get(
+              "all_companies", sorted(list(df_m["Company Name"].unique()))
+          ),
+      )
+    raise net_ex
 
 
 # --- 4. SESSION-STATE PERSISTENT CACHE MANAGER ---
@@ -325,7 +354,7 @@ all_companies_list = st.session_state.all_companies_list
 
 # --- 5. STREAMLINED COMPARTMENTALIZED SIDEBAR CONTROLLER ---
 st.sidebar.title("🏢 Navigation Control Panel")
-st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | Reliable Ingestion Engine**")
+st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | Hardened Engine**")
 
 if not all_companies_list:
   st.error(
@@ -517,12 +546,26 @@ def sync_from_ind(name):
   st.session_state[f"team_notes_{name}"] = val
 
 
-# --- 7. SCOPED POST INGESTION ENGINE (Dynamic Key Versioning Engine) ---
+# --- 7. SCOPED POST INGESTION ENGINE (Content Validation + Duplicate Guard) ---
 if "uploader_id" not in st.session_state:
   st.session_state.uploader_id = 0
 
+EXPECTED_LABELS = {"Impressions", "Reactions", "Post Date"}
+
+
+def looks_valid(df_test):
+  if df_test.empty or len(df_test.columns) < 1:
+    return False
+  first_col = (
+      df_test["Label"].astype(str)
+      if "Label" in df_test.columns
+      else df_test.iloc[:, 0].astype(str)
+  )
+  first_col_cleaned = set(first_col.str.strip())
+  return len(EXPECTED_LABELS & first_col_cleaned) >= 2
+
+
 with st.sidebar.expander("📤 Scoped Post Ingestion"):
-  # Display persistent status message after page rerun if set
   if (
       "last_upload_status" in st.session_state
       and st.session_state.last_upload_status
@@ -535,7 +578,6 @@ with st.sidebar.expander("📤 Scoped Post Ingestion"):
       "Assign Post Data To:", all_profiles_list, key="upload_exec_select"
   )
 
-  # Dynamic key initialization ensures each upload gets a pristine, fresh file uploader widget
   uploaded_post_file = st.file_uploader(
       "Upload LinkedIn Excel / CSV",
       type=["xlsx", "csv"],
@@ -566,18 +608,29 @@ with st.sidebar.expander("📤 Scoped Post Ingestion"):
                 df_test = pd.read_csv(
                     uploaded_post_file, sep=sep, encoding=encoding
                 )
-                if len(df_test.columns) >= 2 and len(df_test) > 5:
+                if (
+                    len(df_test.columns) >= 2
+                    and len(df_test) > 5
+                    and looks_valid(df_test)
+                ):
                   df_upload = df_test
                   break
-              except:
+              except (UnicodeDecodeError, pd.errors.ParserError, ValueError):
                 continue
             if df_upload is not None:
               break
-          if df_upload is None:
-            uploaded_post_file.seek(0)
-            df_upload = pd.read_csv(uploaded_post_file)
         else:
-          df_upload = pd.read_excel(uploaded_post_file)
+          df_test = pd.read_excel(uploaded_post_file)
+          if looks_valid(df_test):
+            df_upload = df_test
+
+        if df_upload is None:
+          st.sidebar.error(
+              "❌ Couldn't parse this file. Expected a valid LinkedIn post"
+              " export containing metrics like 'Impressions', 'Reactions', or"
+              " 'Post Date'."
+          )
+          st.stop()
 
         extracted_url = (
             df_upload.columns[1]
@@ -616,17 +669,52 @@ with st.sidebar.expander("📤 Scoped Post Ingestion"):
 
               digits = re.sub(r"[^\d]", "", val_str)
               return int(digits) if digits else 0
-          return 0
+          return None
 
-        raw_date = (
-            df_upload[df_upload["Label"] == "Post Date"].iloc[0]["Value"]
-            if not df_upload[df_upload["Label"] == "Post Date"].empty
-            else datetime.today().strftime("%Y-%m-%d")
-        )
+        # Verify Post Date explicitly instead of silent default
+        raw_date_row = df_upload[df_upload["Label"] == "Post Date"]
+        if raw_date_row.empty or pd.isna(raw_date_row.iloc[0]["Value"]):
+          st.sidebar.error(
+              "❌ 'Post Date' field not found in uploaded file. Ingestion"
+              " stopped to prevent misdating content."
+          )
+          st.stop()
+
+        raw_date_val = str(raw_date_row.iloc[0]["Value"]).strip()
         try:
-          clean_date = pd.to_datetime(raw_date).strftime("%Y-%m-%d")
-        except:
-          clean_date = datetime.today().strftime("%Y-%m-%d")
+          clean_date = pd.to_datetime(raw_date_val).strftime("%Y-%m-%d")
+        except Exception:
+          st.sidebar.error(
+              f"❌ Invalid 'Post Date' format: '{raw_date_val}'. Could not parse"
+              " date."
+          )
+          st.stop()
+
+        # Duplicate Post Guard
+        if not st.session_state.df_posts_raw.empty:
+          existing_p = st.session_state.df_posts_raw
+          url_duplicate = (
+              extracted_url != "Organic Post Link"
+              and "Post URL" in existing_p.columns
+              and (existing_p["Post URL"] == extracted_url).any()
+          )
+
+          date_prof_duplicate = False
+          if (
+              "Publish Date" in existing_p.columns
+              and "Profile Name" in existing_p.columns
+          ):
+            match_mask = (
+                existing_p["Publish Date"].dt.strftime("%Y-%m-%d") == clean_date
+            ) & (existing_p["Profile Name"] == target_upload_profile)
+            date_prof_duplicate = match_mask.any()
+
+          if url_duplicate or date_prof_duplicate:
+            st.sidebar.error(
+                f"⛔ Duplicate Post Blocked! A post for {target_upload_profile}"
+                f" on {clean_date} already exists."
+            )
+            st.stop()
 
         companies_list_from_file, industries = [], []
         computed_dm_reach = 0.0
@@ -656,13 +744,8 @@ with st.sidebar.expander("📤 Scoped Post Ingestion"):
             profile_record_id = p_rec["id"]
             break
 
-        payload = {
-            "Profile": [profile_record_id] if profile_record_id else [],
-            "Publish Date": clean_date,
-            "Topic": (
-                entered_topic if entered_topic else "LinkedIn Organic Content"
-            ),
-            "Post URL": extracted_url,
+        # Read fields safely and signal missing ones
+        metric_fields = {
             "Impressions": read_field("Impressions"),
             "Reactions": read_field("Reactions"),
             "Comments": read_field("Comments"),
@@ -676,6 +759,39 @@ with st.sidebar.expander("📤 Scoped Post Ingestion"):
             "Reposts": read_field("Reposts"),
             "Saves": read_field("Saves"),
             "Sends on LinkedIn": read_field("Sends on LinkedIn"),
+        }
+
+        missing_fields = [k for k, v in metric_fields.items() if v is None]
+        if missing_fields:
+          st.sidebar.warning(
+              "⚠️ Note: The following fields were missing in the export and set"
+              f" to 0: {', '.join(missing_fields)}"
+          )
+
+        final_metrics = {
+            k: (v if v is not None else 0) for k, v in metric_fields.items()
+        }
+
+        payload = {
+            "Profile": [profile_record_id] if profile_record_id else [],
+            "Publish Date": clean_date,
+            "Topic": (
+                entered_topic if entered_topic else "LinkedIn Organic Content"
+            ),
+            "Post URL": extracted_url,
+            "Impressions": final_metrics["Impressions"],
+            "Reactions": final_metrics["Reactions"],
+            "Comments": final_metrics["Comments"],
+            "Profile Visitors From Post": final_metrics[
+                "Profile Visitors From Post"
+            ],
+            "Members Reached": final_metrics["Members Reached"],
+            "Followers Gained From Post": final_metrics[
+                "Followers Gained From Post"
+            ],
+            "Reposts": final_metrics["Reposts"],
+            "Saves": final_metrics["Saves"],
+            "Sends on LinkedIn": final_metrics["Sends on LinkedIn"],
             "Decision-Maker Reach %": computed_dm_reach / 100.0,
             "Top Target Accounts": ", ".join(companies_list_from_file[:3]),
             "Top Core Industries": ", ".join(industries[:3]),
@@ -701,13 +817,11 @@ with st.sidebar.expander("📤 Scoped Post Ingestion"):
             ignore_index=True,
         )
 
-        # Advance uploader version to force a clean widget instance on next render
         st.session_state.uploader_id += 1
         st.session_state.last_upload_status = (
             f"🎉 Success! Ingested post for {target_upload_profile}."
         )
 
-        # Trigger clean rerun to refresh dashboard visuals with newly ingested post
         st.rerun()
       except Exception as parse_ex:
         error_details = str(parse_ex)
@@ -717,10 +831,13 @@ with st.sidebar.expander("📤 Scoped Post Ingestion"):
 
 if st.sidebar.button("🔄 Sync Fresh Airtable Data", use_container_width=True):
   st.cache_data.clear()
-  if os.path.exists("metrics_disk.parquet"):
-    os.remove("metrics_disk.parquet")
-  if os.path.exists("posts_disk.parquet"):
-    os.remove("posts_disk.parquet")
+  for disk_file in [
+      "metrics_disk.parquet",
+      "posts_disk.parquet",
+      "metadata_disk.pkl",
+  ]:
+    if os.path.exists(disk_file):
+      os.remove(disk_file)
   del st.session_state.db_initialized
   st.rerun()
 
