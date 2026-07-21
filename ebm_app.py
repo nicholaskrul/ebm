@@ -61,7 +61,7 @@ except Exception:
 from weasyprint import HTML
 
 # --- 1. APPLICATION CONFIGURATION & VERSIONING ---
-APP_VERSION = "5.5"
+APP_VERSION = "5.6"
 
 st.set_page_config(
     page_title=f"Executive Analytics Hub v{APP_VERSION}",
@@ -399,7 +399,7 @@ all_companies_list = st.session_state.all_companies_list
 
 # --- 5. STREAMLINED COMPARTMENTALIZED SIDEBAR CONTROLLER ---
 st.sidebar.title("🏢 Navigation Control Panel")
-st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | Complete Matrix Patch Active**")
+st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | HTML Name Fix Active**")
 
 if not all_companies_list:
   st.error(
@@ -1293,7 +1293,7 @@ def generate_single_progress_pdf(
         </table>
         """
 
-  f_html = (
+  final_html = (
       html_template.replace("__NAME__", selected_profile)
       .replace("__TITLE__", job_title_str)
       .replace("__MONTH__", horizon_str)
