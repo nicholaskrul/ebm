@@ -13,7 +13,7 @@ from urllib3.util import Retry
 from weasyprint import HTML
 
 # --- 1. APPLICATION CONFIGURATION & VERSIONING ---
-APP_VERSION = "5.1"
+APP_VERSION = "5.2"
 
 st.set_page_config(
     page_title=f"Executive Analytics Hub v{APP_VERSION}",
@@ -285,7 +285,6 @@ def fetch_raw_airtable_data():
         )
     )
 
-    # Persist data AND metadata to local disk cache for robust fallbacks
     try:
       df_m.to_parquet("metrics_disk.parquet")
       df_p.to_parquet("posts_disk.parquet")
@@ -352,7 +351,7 @@ all_companies_list = st.session_state.all_companies_list
 
 # --- 5. STREAMLINED COMPARTMENTALIZED SIDEBAR CONTROLLER ---
 st.sidebar.title("🏢 Navigation Control Panel")
-st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | Extended Scope Controls**")
+st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | Inception PDF Alignment**")
 
 if not all_companies_list:
   st.error(
@@ -1115,14 +1114,14 @@ def generate_single_progress_pdf(
             • Cumulative Shift (Inception): <span class='__SSI_INC_CLS__'>__SSI_INC__</span>
         </div>
         <div class='card' style='border-top-color: #64748b;'>
-            <strong>Profile Visibility & Output Metrics This Period</strong><br>
-            • Posts Published This Month: <strong>__POSTS__ Posts</strong><br>
+            <strong>Profile Visibility & Output Metrics (__MONTH__)</strong><br>
+            • Posts Published: <strong>__POSTS__ Posts</strong><br>
             • Profile Discovery Views: <strong>__VIEWS__</strong><br>
             • Search Appearances Indexes: <strong>__APP__</strong>
         </div>
 
         <div class='card' style='border-top-color: #7c3aed;'>
-            <strong>Audience Quality & Account Intelligence Index</strong><br>
+            <strong>Audience Quality & Account Intelligence Index (__MONTH__)</strong><br>
             • Average Decision-Maker Reach Tier: <strong>__DM_REACH__%</strong><br>
             • Key Target Accounts Engaged: <em>__TARGET_ACCOUNTS__</em><br>
             • Primary Industry Heatmaps: <em>__TARGET_INDUSTRIES__</em><br>
@@ -1233,7 +1232,7 @@ def generate_single_progress_pdf(
   if b64_reach_pct and b64_members_reached and b64_eng_rate:
     ind_posts_section_html = f"""
         <div class="page-break"></div>
-        <div class='header'><h1>📊 Single-Post Performance Breakdown (Current Month)</h1></div>
+        <div class='header'><h1>📊 Single-Post Performance Breakdown ({horizon_str})</h1></div>
         <table class='grid-table'>
             <tr>
                 <td>
@@ -1596,10 +1595,14 @@ with tab_individual:
       display_posts_cnt = int(prof_row["Posts Published"])
       display_views = int(prof_row["Views"])
       display_app = int(prof_row["Appearances"])
+      pdf_horizon_str = selected_ym.strftime("%B %Y")
+      pdf_file_suffix = selected_ym.strftime("%Y_%m")
     else:  # "Since Inception"
       target_posts = individual_posts
       posts_metric_label = "Posts (Total Output)"
-      display_posts_cnt = len(individual_posts) if not individual_posts.empty else 0
+      display_posts_cnt = (
+          len(individual_posts) if not individual_posts.empty else 0
+      )
       display_views = (
           int(profile_metrics["Profile views"].sum())
           if not profile_metrics.empty
@@ -1610,8 +1613,10 @@ with tab_individual:
           if not profile_metrics.empty
           else 0
       )
+      pdf_horizon_str = "Since Inception"
+      pdf_file_suffix = "Since_Inception"
 
-    # Dynamically compute audience quality metrics based on active scope (Month vs Inception)
+    # Dynamically compute audience quality metrics based on active scope
     avg_dm_reach = (
         target_posts["Decision-Maker Reach %"].mean() * 100
         if not target_posts.empty
@@ -1665,17 +1670,13 @@ with tab_individual:
         else "No industrial tracking profiles mapped."
     )
 
-    # Prepare graphs for PDF compiler
-    month_posts_pdf = (
-        individual_posts[individual_posts["YearMonth"] == selected_ym]
-        if not individual_posts.empty and "YearMonth" in individual_posts.columns
-        else pd.DataFrame()
-    )
+    # Prepare Scope-Aligned Graphs for PDF Compiler
     b64_reach_pct, b64_members_reached, b64_eng_rate = "", "", ""
-    if not month_posts_pdf.empty:
-      pdf_plot_df = month_posts_pdf.copy().sort_values("Publish Date")
+    if not target_posts.empty:
+      pdf_plot_df = target_posts.copy().sort_values("Publish Date")
+      date_lbl_fmt = "%m-%d" if exec_scope == "Selected Month" else "%Y-%m-%d"
       pdf_plot_df["Post Label"] = (
-          pdf_plot_df["Publish Date"].dt.strftime("%m-%d")
+          pdf_plot_df["Publish Date"].dt.strftime(date_lbl_fmt)
           + " - "
           + pdf_plot_df["Topic"].str.slice(0, 12)
       )
@@ -1713,31 +1714,32 @@ with tab_individual:
     with ind_col_right:
       st.subheader("✏️ Performance Brief Notes")
       st.text_area(
-          "Add context or monthly achievement statements for this user's PDF"
-          " brief:",
+          "Add context or achievement statements for this user's PDF brief:",
           key=f"ind_notes_{selected_profile}",
           on_change=sync_from_ind,
           args=(selected_profile,),
       )
 
-      if st.button(f"🛠️ Prepare {selected_profile}'s Monthly Brief"):
+      if st.button(
+          f"🛠️ Prepare {selected_profile}'s Brief ({pdf_horizon_str})"
+      ):
         try:
           single_pdf_bytes = generate_single_progress_pdf(
               profile_metrics,
-              individual_posts,
+              target_posts,
               st.session_state.manager_notes.get(selected_profile, ""),
               selected_profile,
               prof_row["Job Title"],
-              selected_ym.strftime("%B %Y"),
+              pdf_horizon_str,
               prof_row["Followers"],
               prof_row["Followers MoM%"],
               prof_row["Followers Inc Growth"],
               prof_row["SSI"],
               prof_row["SSI MoM Shift"],
               prof_row["SSI Inc Shift"],
-              prof_row["Posts Published"],
-              prof_row["Views"],
-              prof_row["Appearances"],
+              display_posts_cnt,
+              display_views,
+              display_app,
               avg_dm_reach,
               accounts_summary_str,
               industries_summary_str,
@@ -1757,10 +1759,10 @@ with tab_individual:
 
       if f"compiled_single_pdf_{selected_profile}" in st.session_state:
         st.download_button(
-            label=f"📥 Download {selected_profile}'s Monthly PDF Brief",
+            label=f"📥 Download {selected_profile}'s Brief ({pdf_horizon_str})",
             data=st.session_state[f"compiled_single_pdf_{selected_profile}"],
             file_name=(
-                f"LinkedIn_Brief_{selected_profile.replace(' ', '_')}_{selected_ym.strftime('%Y_%m')}.pdf"
+                f"LinkedIn_Brief_{selected_profile.replace(' ', '_')}_{pdf_file_suffix}.pdf"
             ),
             mime="application/pdf",
             use_container_width=True,
@@ -1782,12 +1784,18 @@ with tab_individual:
       col4.metric(
           "Profile Views",
           f"{display_views:,}",
-          help="Snapshot views for month or total captured views since inception based on selected scope."
+          help=(
+              "Snapshot views for month or total captured views since"
+              " inception based on selected scope."
+          ),
       )
       col5.metric(
           "Search Appearances",
           f"{display_app:,}",
-          help="Snapshot search appearances for month or total captured appearances since inception."
+          help=(
+              "Snapshot search appearances for month or total captured"
+              " appearances since inception."
+          ),
       )
 
       st.markdown(f"### 🎯 Audience Quality Index ({exec_scope})")
