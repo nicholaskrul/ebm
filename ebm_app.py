@@ -12,7 +12,7 @@ import base64
 from weasyprint import HTML
 
 # --- 1. APPLICATION CONFIGURATION & VERSIONING ---
-APP_VERSION = "4.0"
+APP_VERSION = "4.1"
 
 st.set_page_config(
     page_title=f"Executive Analytics Hub v{APP_VERSION}",
@@ -57,7 +57,7 @@ metrics_table = api.table(BASE_ID, "Weekly Metrics")
 posts_table = api.table(BASE_ID, "Posts and content")
 
 
-# --- 3. DATA RECONCILIATION ENGINE (Disk Backup + Dynamic Schema Resolver) ---
+# --- 3. DATA RECONCILIATION ENGINE (Disk Backup + Schema Resolver) ---
 @st.cache_data(ttl=86400, show_spinner=False)  # 24-hour persistent cache
 def fetch_raw_airtable_data():
     try:
@@ -82,7 +82,7 @@ def fetch_raw_airtable_data():
                 'Logo URL': fields.get('Logo URL', '')
             }
 
-        # 2. Map Profile IDs to metadata
+        # 2. Map Profile IDs strictly to associated company metadata
         profile_map = {}
         for r in raw_profiles:
             fields = r['fields']
@@ -107,7 +107,7 @@ def fetch_raw_airtable_data():
                 'Logo URL': comp_info['Logo URL']
             }
 
-        # 3. Process Metrics Dataset
+        # 3. Process Metrics Dataset with mapped company tags
         metrics_data = []
         for r in raw_metrics:
             fields = r['fields'].copy()
@@ -144,7 +144,7 @@ def fetch_raw_airtable_data():
         else:
             df_m = pd.DataFrame(columns=['Profile Name', 'Job Title', 'Company Name', 'Brand Color', 'Logo URL', 'Date', 'Total followers', 'SSI', 'Profile views', 'Appearances'])
 
-        # 4. Process Content Logs Dataset
+        # 4. Process Content Logs Dataset with mapped company tags
         posts_data = []
         for r in raw_posts:
             fields = r['fields'].copy()
@@ -202,20 +202,20 @@ def fetch_raw_airtable_data():
 
         all_companies = sorted(list(set([info['Company Name'] for info in id_to_company.values() if info['Company Name'] != 'Unknown Company'])))
 
-        # Save Disk Backup (0 API calls on server wake up)
+        # Save local cache backup for instant container wake ups
         try:
             df_m.to_parquet("metrics_disk.parquet")
             df_p.to_parquet("posts_disk.parquet")
         except Exception:
             pass
 
-        return df_m, df_p, raw_profiles, all_companies
+        return df_m, df_p, raw_profiles, profile_map, all_companies
 
     except Exception as ex:
         if os.path.exists("metrics_disk.parquet") and os.path.exists("posts_disk.parquet"):
             df_m = pd.read_parquet("metrics_disk.parquet")
             df_p = pd.read_parquet("posts_disk.parquet")
-            return df_m, df_p, [], list(df_m['Company Name'].unique())
+            return df_m, df_p, [], {}, list(df_m['Company Name'].unique())
         raise ex
 
 
@@ -223,10 +223,11 @@ def fetch_raw_airtable_data():
 if "db_initialized" not in st.session_state:
     with st.spinner("⚡ Initializing database session..."):
         try:
-            df_m_raw, df_p_raw, raw_prof_raw, companies_list = fetch_raw_airtable_data()
+            df_m_raw, df_p_raw, raw_prof_raw, profile_map_raw, companies_list = fetch_raw_airtable_data()
             st.session_state.df_metrics_raw = df_m_raw
             st.session_state.df_posts_raw = df_p_raw
             st.session_state.raw_profiles_raw = raw_prof_raw
+            st.session_state.profile_map_raw = profile_map_raw
             st.session_state.all_companies_list = companies_list
             st.session_state.db_initialized = True
         except Exception as e:
@@ -237,30 +238,30 @@ if "db_initialized" not in st.session_state:
 df_metrics_raw = st.session_state.df_metrics_raw
 df_posts_raw = st.session_state.df_posts_raw
 raw_profiles_raw = st.session_state.raw_profiles_raw
+profile_map_raw = st.session_state.profile_map_raw
 all_companies_list = st.session_state.all_companies_list
 
 
-# --- 5. GLOBAL MULTI-TENANT FILTER & SCOPING CONTROLLER ---
-st.sidebar.title("🏢 Agency Control Panel")
-st.sidebar.caption(f"🚀 **Analytics Hub Build v{APP_VERSION}**")
-
-# Manual Refresh Button
-if st.sidebar.button("🔄 Sync Fresh Airtable Data", use_container_width=True):
-    st.cache_data.clear()
-    if os.path.exists("metrics_disk.parquet"): os.remove("metrics_disk.parquet")
-    if os.path.exists("posts_disk.parquet"): os.remove("posts_disk.parquet")
-    del st.session_state.db_initialized
-    st.rerun()
-
-st.sidebar.markdown("---")
+# --- 5. STREAMLINED COMPARTMENTALIZED SIDEBAR CONTROLLER ---
+st.sidebar.title("🏢 Navigation Control Panel")
+st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | Enterprise Compartmentalization**")
 
 if not all_companies_list:
     st.error("❌ No valid companies found in your database mapping. Add a company to your Companies table in Airtable first.")
     st.stop()
 
-selected_company = st.sidebar.selectbox("🎯 Select Client Portfolio", all_companies_list)
+# -------------------------------------------------------------
+# 🏢 MASTER COMPARTMENTALIZATION DROPDOWN
+# -------------------------------------------------------------
+selected_company = st.sidebar.selectbox(
+    "🏢 Company",
+    all_companies_list,
+    help="Select a company to filter all dashboard views, profile options, and reporting assets."
+)
 
-# Scope database tables dynamically
+st.sidebar.markdown("---")
+
+# Strictly filter all datasets to selected company ONLY
 df_metrics = df_metrics_raw[df_metrics_raw['Company Name'] == selected_company].copy()
 df_posts = df_posts_raw[df_posts_raw['Company Name'] == selected_company].copy()
 
@@ -271,11 +272,10 @@ if not df_metrics.empty:
 else:
     client_brand_color = '#0a66c2'
     client_logo_url = ''
-    for r in raw_profiles_raw:
-        fields = r['fields']
-        if fields.get('Company'):
-            client_brand_color = fields.get('Brand Color', '#0a66c2')
-            client_logo_url = fields.get('Logo URL', '')
+    for p_info in profile_map_raw.values():
+        if p_info.get('Company Name') == selected_company:
+            client_brand_color = p_info.get('Brand Color', '#0a66c2')
+            client_logo_url = p_info.get('Logo URL', '')
             break
 
 st.markdown(f'''
@@ -286,43 +286,48 @@ st.markdown(f'''
 </style>
 ''', unsafe_allow_html=True)
 
-# Timelines scoping across both datasets
-if not df_metrics.empty:
-    df_metrics['YearMonth'] = df_metrics['Date'].dt.to_period('M')
-    months_from_metrics = df_metrics['YearMonth'].dropna().unique().tolist()
-    profiles_from_metrics = df_metrics['Profile Name'].unique().tolist()
-else:
-    months_from_metrics = []
-    profiles_from_metrics = []
-
-if not df_posts.empty and 'YearMonth' in df_posts.columns:
-    months_from_posts = df_posts['YearMonth'].dropna().unique().tolist()
-    profiles_from_posts = df_posts['Profile Name'].unique().tolist()
-else:
-    months_from_posts = []
-    profiles_from_posts = []
-
+# Determine available months strictly for THIS company
+months_from_metrics = df_metrics['YearMonth'].dropna().unique().tolist() if not df_metrics.empty and 'YearMonth' in df_metrics.columns else []
+months_from_posts = df_posts['YearMonth'].dropna().unique().tolist() if not df_posts.empty and 'YearMonth' in df_posts.columns else []
 all_unique_months = set(months_from_metrics + months_from_posts)
+
 if all_unique_months:
     available_months = sorted(list(all_unique_months), reverse=True)
 else:
     available_months = [pd.Period(datetime.today().strftime('%Y-%m'), freq='M')]
 
+# Determine executive profiles strictly belonging to THIS company ONLY
+profiles_from_metrics = df_metrics['Profile Name'].unique().tolist() if not df_metrics.empty else []
+profiles_from_posts = df_posts['Profile Name'].unique().tolist() if not df_posts.empty else []
 profiles_from_raw = [
-    r['fields'].get('Full Name', 'Unknown') 
-    for r in raw_profiles_raw 
-    if r['fields'].get('Company Name') == selected_company or 
-    (r['fields'].get('Company') and len(r['fields'].get('Company')) > 0)
+    p_info['Full Name'] 
+    for p_info in profile_map_raw.values() 
+    if p_info.get('Company Name') == selected_company
 ]
 
 all_profiles_list = sorted(list(set(profiles_from_metrics + profiles_from_posts + profiles_from_raw)))
 
 if not all_profiles_list:
-    st.warning(f"⚠️ No executive profiles have been linked to **{selected_company}** yet.")
+    st.sidebar.warning(f"⚠️ No executive profiles linked to **{selected_company}**.")
     st.stop()
 
-selected_ym = st.sidebar.selectbox("📅 Reporting Horizon", available_months, format_func=lambda x: x.strftime('%B %Y'))
-selected_profile = st.sidebar.selectbox("👤 Executive Focus", all_profiles_list)
+# -------------------------------------------------------------
+# 🎯 SCOPED FILTER CONTROLS (Pulls through company profiles ONLY)
+# -------------------------------------------------------------
+st.sidebar.subheader("📅 Scope & Focus")
+selected_ym = st.sidebar.selectbox(
+    "📅 Reporting Horizon", 
+    available_months, 
+    format_func=lambda x: x.strftime('%B %Y')
+)
+
+selected_profile = st.sidebar.selectbox(
+    "👤 Executive Focus", 
+    all_profiles_list,
+    help="Select an executive belonging to this company."
+)
+
+st.sidebar.markdown("---")
 
 
 # --- 6. STATE MANAGEMENT & CROSS-TAB INPUT SYNCHRONIZATION ---
@@ -348,7 +353,7 @@ def sync_from_ind(name):
     st.session_state[f"team_notes_{name}"] = val
 
 
-# --- 7. SCOPED POST INGESTION ENGINE (Zero-Read Local Injection) ---
+# --- 7. SCOPED POST INGESTION & DATA SYNC UTILITIES ---
 with st.sidebar.expander("📤 Scoped Post Ingestion"):
     st.markdown("### Process Single-Post Export")
     target_upload_profile = st.selectbox("Assign Post Data To:", all_profiles_list, key="upload_exec_select")
@@ -470,6 +475,13 @@ with st.sidebar.expander("📤 Scoped Post Ingestion"):
                 if hasattr(parse_ex, 'response') and parse_ex.response is not None:
                     error_details += f" | Response: {parse_ex.response.text}"
                 st.sidebar.error(f"Ingestion break: {error_details}")
+
+if st.sidebar.button("🔄 Sync Fresh Airtable Data", use_container_width=True):
+    st.cache_data.clear()
+    if os.path.exists("metrics_disk.parquet"): os.remove("metrics_disk.parquet")
+    if os.path.exists("posts_disk.parquet"): os.remove("posts_disk.parquet")
+    del st.session_state.db_initialized
+    st.rerun()
 
 
 # --- 8. GRAPH ENGINE BASE64 EXPORT UTILITY ---
@@ -900,7 +912,7 @@ tab_team, tab_individual = st.tabs(["👥 Team Overview", "🎯 Individual Deep 
 # ==========================================
 with tab_team:
     st.subheader(f"👥 {selected_company} Standing Leaderboard")
-    st.markdown("Aggregated standings with cross-profile analytics tracking overall, monthly progress, and content velocity.")
+    st.markdown(f"Aggregated standings for **{selected_company}** with cross-profile analytics tracking overall, monthly progress, and content velocity.")
     st.markdown("---")
 
     with st.expander("📝 Edit Executive Monthly Commentary Notes"):
@@ -1034,7 +1046,7 @@ with tab_individual:
             b64_members_reached = export_plot_to_b64(pdf_plot_df, 'Members Reached', 'bar', '#ff9900')
             b64_eng_rate = export_plot_to_b64(pdf_plot_df, 'Engagement Rate (%)', 'bar', '#1db954')
 
-        st.subheader(f"📈 Strategic Progress Breakdown: {selected_profile}")
+        st.subheader(f"📈 Strategic Progress Breakdown: {selected_profile} ({selected_company})")
         st.markdown("---")
 
         ind_col_left, ind_col_right = st.columns([2, 1])
