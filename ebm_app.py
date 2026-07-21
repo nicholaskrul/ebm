@@ -12,7 +12,7 @@ import base64
 from weasyprint import HTML
 
 # --- 1. APPLICATION CONFIGURATION & VERSIONING ---
-APP_VERSION = "4.1"
+APP_VERSION = "4.2"
 
 st.set_page_config(
     page_title=f"Executive Analytics Hub v{APP_VERSION}",
@@ -57,7 +57,7 @@ metrics_table = api.table(BASE_ID, "Weekly Metrics")
 posts_table = api.table(BASE_ID, "Posts and content")
 
 
-# --- 3. DATA RECONCILIATION ENGINE (Disk Backup + Schema Resolver) ---
+# --- 3. DATA RECONCILIATION ENGINE (Disk Backup + Dynamic Schema Resolver) ---
 @st.cache_data(ttl=86400, show_spinner=False)  # 24-hour persistent cache
 def fetch_raw_airtable_data():
     try:
@@ -133,6 +133,7 @@ def fetch_raw_airtable_data():
         if not df_m.empty:
             df_m = df_m.dropna(subset=['Date'])
             df_m['Date'] = pd.to_datetime(df_m['Date'])
+            df_m['YearMonth'] = df_m['Date'].dt.to_period('M')
             ssi_col = [col for col in df_m.columns if col.startswith('SSI')][0] if [col for col in df_m.columns if col.startswith('SSI')] else 'SSI'
             df_m = df_m.rename(columns={ssi_col: 'SSI'})
 
@@ -142,7 +143,7 @@ def fetch_raw_airtable_data():
                 else:
                     df_m[metric_col] = 0
         else:
-            df_m = pd.DataFrame(columns=['Profile Name', 'Job Title', 'Company Name', 'Brand Color', 'Logo URL', 'Date', 'Total followers', 'SSI', 'Profile views', 'Appearances'])
+            df_m = pd.DataFrame(columns=['Profile Name', 'Job Title', 'Company Name', 'Brand Color', 'Logo URL', 'Date', 'YearMonth', 'Total followers', 'SSI', 'Profile views', 'Appearances'])
 
         # 4. Process Content Logs Dataset with mapped company tags
         posts_data = []
@@ -244,15 +245,13 @@ all_companies_list = st.session_state.all_companies_list
 
 # --- 5. STREAMLINED COMPARTMENTALIZED SIDEBAR CONTROLLER ---
 st.sidebar.title("🏢 Navigation Control Panel")
-st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | Enterprise Compartmentalization**")
+st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | Enterprise Engine**")
 
 if not all_companies_list:
     st.error("❌ No valid companies found in your database mapping. Add a company to your Companies table in Airtable first.")
     st.stop()
 
-# -------------------------------------------------------------
-# 🏢 MASTER COMPARTMENTALIZATION DROPDOWN
-# -------------------------------------------------------------
+# MASTER COMPARTMENTALIZATION DROPDOWN
 selected_company = st.sidebar.selectbox(
     "🏢 Company",
     all_companies_list,
@@ -261,9 +260,9 @@ selected_company = st.sidebar.selectbox(
 
 st.sidebar.markdown("---")
 
-# Strictly filter all datasets to selected company ONLY
-df_metrics = df_metrics_raw[df_metrics_raw['Company Name'] == selected_company].copy()
-df_posts = df_posts_raw[df_posts_raw['Company Name'] == selected_company].copy()
+# Filter datasets strictly to selected company ONLY
+df_metrics = df_metrics_raw[df_metrics_raw['Company Name'] == selected_company].copy() if not df_metrics_raw.empty else pd.DataFrame(columns=['Profile Name', 'Job Title', 'Company Name', 'Brand Color', 'Logo URL', 'Date', 'YearMonth', 'Total followers', 'SSI', 'Profile views', 'Appearances'])
+df_posts = df_posts_raw[df_posts_raw['Company Name'] == selected_company].copy() if not df_posts_raw.empty else pd.DataFrame(columns=['Profile Name', 'Company Name', 'Brand Color', 'Logo URL', 'Publish Date', 'YearMonth', 'Impressions', 'Engagement', 'Reactions', 'Comments', 'Profile Visitors From Post', 'Members Reached', 'Followers Gained From Post', 'Reposts', 'Saves', 'Sends on LinkedIn', 'Decision-Maker Reach %', 'Top Target Accounts', 'Top Core Industries', 'Topic'])
 
 # Robust styling parameters extraction
 if not df_metrics.empty:
@@ -286,7 +285,10 @@ st.markdown(f'''
 </style>
 ''', unsafe_allow_html=True)
 
-# Determine available months strictly for THIS company
+# Ensure YearMonth is populated defensively
+if not df_metrics.empty and 'Date' in df_metrics.columns and 'YearMonth' not in df_metrics.columns:
+    df_metrics['YearMonth'] = df_metrics['Date'].dt.to_period('M')
+
 months_from_metrics = df_metrics['YearMonth'].dropna().unique().tolist() if not df_metrics.empty and 'YearMonth' in df_metrics.columns else []
 months_from_posts = df_posts['YearMonth'].dropna().unique().tolist() if not df_posts.empty and 'YearMonth' in df_posts.columns else []
 all_unique_months = set(months_from_metrics + months_from_posts)
@@ -296,7 +298,6 @@ if all_unique_months:
 else:
     available_months = [pd.Period(datetime.today().strftime('%Y-%m'), freq='M')]
 
-# Determine executive profiles strictly belonging to THIS company ONLY
 profiles_from_metrics = df_metrics['Profile Name'].unique().tolist() if not df_metrics.empty else []
 profiles_from_posts = df_posts['Profile Name'].unique().tolist() if not df_posts.empty else []
 profiles_from_raw = [
@@ -311,9 +312,7 @@ if not all_profiles_list:
     st.sidebar.warning(f"⚠️ No executive profiles linked to **{selected_company}**.")
     st.stop()
 
-# -------------------------------------------------------------
-# 🎯 SCOPED FILTER CONTROLS (Pulls through company profiles ONLY)
-# -------------------------------------------------------------
+# SCOPED FILTER CONTROLS
 st.sidebar.subheader("📅 Scope & Focus")
 selected_ym = st.sidebar.selectbox(
     "📅 Reporting Horizon", 
@@ -353,7 +352,7 @@ def sync_from_ind(name):
     st.session_state[f"team_notes_{name}"] = val
 
 
-# --- 7. SCOPED POST INGESTION & DATA SYNC UTILITIES ---
+# --- 7. SCOPED POST INGESTION ENGINE ---
 with st.sidebar.expander("📤 Scoped Post Ingestion"):
     st.markdown("### Process Single-Post Export")
     target_upload_profile = st.selectbox("Assign Post Data To:", all_profiles_list, key="upload_exec_select")
@@ -843,9 +842,10 @@ def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, se
 def compute_profile_standings(df_metrics_source, df_posts_source, target_profiles, selected_ym_target):
     rows = []
     for name in target_profiles:
-        pm = df_metrics_source[df_metrics_source['Profile Name'] == name].sort_values('Date') if not df_metrics_source.empty else pd.DataFrame()
+        pm = df_metrics_source[df_metrics_source['Profile Name'] == name].sort_values('Date') if (not df_metrics_source.empty and 'Profile Name' in df_metrics_source.columns) else pd.DataFrame()
 
-        if pm.empty:
+        # Safely handle empty metrics or missing YearMonth columns
+        if pm.empty or 'YearMonth' not in pm.columns:
             job_title = 'Executive'
             followers_curr, followers_mom, followers_inc = 0, 0.0, 0
             ssi_curr, ssi_mom, ssi_inc = 0, 0, 0
@@ -1013,7 +1013,7 @@ with tab_individual:
     else:
         prof_row = matching_profile_rows.iloc[0]
         profile_metrics = df_metrics[df_metrics['Profile Name'] == selected_profile].sort_values('Date') if not df_metrics.empty else pd.DataFrame()
-        current_month_data = profile_metrics[profile_metrics['YearMonth'] == selected_ym] if not profile_metrics.empty else pd.DataFrame()
+        current_month_data = profile_metrics[profile_metrics['YearMonth'] == selected_ym] if not profile_metrics.empty and 'YearMonth' in profile_metrics.columns else pd.DataFrame()
 
         individual_posts = df_posts[df_posts['Profile Name'] == selected_profile].copy() if not df_posts.empty else pd.DataFrame()
         month_posts = individual_posts[individual_posts['YearMonth'] == selected_ym] if not individual_posts.empty and 'YearMonth' in individual_posts.columns else pd.DataFrame()
@@ -1133,11 +1133,11 @@ with tab_individual:
                 )
 
                 if c_timeframe == "Selected Month":
-                    content_posts_filtered = individual_posts[individual_posts['YearMonth'] == selected_ym].copy()
+                    content_posts_filtered = individual_posts[individual_posts['YearMonth'] == selected_ym].copy() if 'YearMonth' in individual_posts.columns else pd.DataFrame()
                     horizon_desc = selected_ym.strftime('%B %Y')
                     date_fmt = '%m-%d'
                 elif c_timeframe == "Selected Year":
-                    content_posts_filtered = individual_posts[individual_posts['Publish Date'].dt.year == selected_ym.year].copy()
+                    content_posts_filtered = individual_posts[individual_posts['Publish Date'].dt.year == selected_ym.year].copy() if 'Publish Date' in individual_posts.columns else pd.DataFrame()
                     horizon_desc = f"Year {selected_ym.year}"
                     date_fmt = '%Y-%m-%d'
                 else: # "All Time"
@@ -1145,23 +1145,23 @@ with tab_individual:
                     horizon_desc = "All Time"
                     date_fmt = '%Y-%m-%d'
 
-                monthly_posts_perf = content_posts_filtered.groupby('YearMonth').agg({
-                    'Impressions': 'sum',
-                    'Engagement': 'sum'
-                }).sort_index()
-
-                monthly_posts_perf.index = monthly_posts_perf.index.astype(str)
-
-                pc1, pc2 = st.columns(2)
-                with pc1:
-                    st.caption(f"📈 Total Organic Post Impressions ({horizon_desc})")
-                    st.bar_chart(monthly_posts_perf['Impressions'], color=client_brand_color)
-                with pc2:
-                    st.caption(f"❤️ Total Post Engagement Interactions ({horizon_desc})")
-                    st.bar_chart(monthly_posts_perf['Engagement'], color="#1db954")
-
-                st.markdown(f"### 📊 Single-Post Performance Breakdown ({horizon_desc})")
                 if not content_posts_filtered.empty:
+                    monthly_posts_perf = content_posts_filtered.groupby('YearMonth').agg({
+                        'Impressions': 'sum',
+                        'Engagement': 'sum'
+                    }).sort_index()
+
+                    monthly_posts_perf.index = monthly_posts_perf.index.astype(str)
+
+                    pc1, pc2 = st.columns(2)
+                    with pc1:
+                        st.caption(f"📈 Total Organic Post Impressions ({horizon_desc})")
+                        st.bar_chart(monthly_posts_perf['Impressions'], color=client_brand_color)
+                    with pc2:
+                        st.caption(f"❤️ Total Post Engagement Interactions ({horizon_desc})")
+                        st.bar_chart(monthly_posts_perf['Engagement'], color="#1db954")
+
+                    st.markdown(f"### 📊 Single-Post Performance Breakdown ({horizon_desc})")
                     ui_plot_df = content_posts_filtered.copy().sort_values('Publish Date')
                     ui_plot_df['Post Label'] = ui_plot_df['Publish Date'].dt.strftime(date_fmt) + " - " + ui_plot_df['Topic'].str.slice(0, 12)
                     ui_plot_df = ui_plot_df.set_index('Post Label')
@@ -1182,11 +1182,8 @@ with tab_individual:
                     with p_ch3:
                         st.caption("⚡ Engagement Rate % per Post (Engagement / Impressions)")
                         st.bar_chart(ui_plot_df['Engagement Rate (%)'], color="#1db954")
-                else:
-                    st.info(f"No organic content found for **{horizon_desc}**.")
 
-                st.markdown(f"### 📋 Granular Post Performance Tracking ({horizon_desc})")
-                if not content_posts_filtered.empty:
+                    st.markdown(f"### 📋 Granular Post Performance Tracking ({horizon_desc})")
                     display_posts = content_posts_filtered.copy().sort_values('Publish Date', ascending=False)
                     display_posts['DM Reach'] = display_posts['Decision-Maker Reach %'].map(lambda x: f"{x*100:.1f}%")
                     st.dataframe(
@@ -1195,6 +1192,6 @@ with tab_individual:
                         hide_index=True
                     )
                 else:
-                    st.info(f"No single-post organic analytics uploaded for **{horizon_desc}**.")
+                    st.info(f"No organic content found for **{horizon_desc}**.")
             else:
                 st.info("No content marketing metrics or post records exist in Airtable to map historical performance curves.")
