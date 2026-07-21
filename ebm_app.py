@@ -13,7 +13,7 @@ from urllib3.util import Retry
 from weasyprint import HTML
 
 # --- 1. APPLICATION CONFIGURATION & VERSIONING ---
-APP_VERSION = "5.0"
+APP_VERSION = "5.1"
 
 st.set_page_config(
     page_title=f"Executive Analytics Hub v{APP_VERSION}",
@@ -64,7 +64,7 @@ metrics_table = api.table(BASE_ID, "Weekly Metrics")
 posts_table = api.table(BASE_ID, "Posts and content")
 
 
-# --- 3. DATA RECONCILIATION ENGINE (Hardened Data & Disk Backup) ---
+# --- 3. DATA RECONCILIATION ENGINE (Disk Backup + Dynamic Schema Resolver) ---
 @st.cache_data(ttl=86400, show_spinner=False)  # 24-hour persistent cache
 def fetch_raw_airtable_data():
   try:
@@ -76,7 +76,7 @@ def fetch_raw_airtable_data():
     raw_metrics = metrics_table.all(formula=metrics_filter)
     raw_posts = posts_table.all(formula=posts_filter)
 
-    # 1. Map Company IDs to metadata details (with default column fallbacks)
+    # 1. Map Company IDs to metadata details
     id_to_company = {}
     for r in raw_companies:
       fields = r["fields"]
@@ -152,7 +152,6 @@ def fetch_raw_airtable_data():
       df_m["Date"] = pd.to_datetime(df_m["Date"])
       df_m["YearMonth"] = df_m["Date"].dt.to_period("M")
 
-      # Single-pass SSI column resolution
       ssi_cols = [col for col in df_m.columns if col.startswith("SSI")]
       ssi_col = ssi_cols[0] if ssi_cols else "SSI"
       df_m = df_m.rename(columns={ssi_col: "SSI"})
@@ -305,7 +304,6 @@ def fetch_raw_airtable_data():
     return df_m, df_p, raw_profiles, profile_map, all_companies
 
   except requests.exceptions.RequestException as net_ex:
-    # Specifically catch HTTP/Network exceptions to fall back to disk
     if (
         os.path.exists("metrics_disk.parquet")
         and os.path.exists("posts_disk.parquet")
@@ -354,7 +352,7 @@ all_companies_list = st.session_state.all_companies_list
 
 # --- 5. STREAMLINED COMPARTMENTALIZED SIDEBAR CONTROLLER ---
 st.sidebar.title("🏢 Navigation Control Panel")
-st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | Hardened Engine**")
+st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | Extended Scope Controls**")
 
 if not all_companies_list:
   st.error(
@@ -546,7 +544,7 @@ def sync_from_ind(name):
   st.session_state[f"team_notes_{name}"] = val
 
 
-# --- 7. SCOPED POST INGESTION ENGINE (Content Validation + Duplicate Guard) ---
+# --- 7. SCOPED POST INGESTION ENGINE ---
 if "uploader_id" not in st.session_state:
   st.session_state.uploader_id = 0
 
@@ -671,7 +669,6 @@ with st.sidebar.expander("📤 Scoped Post Ingestion"):
               return int(digits) if digits else 0
           return None
 
-        # Verify Post Date explicitly instead of silent default
         raw_date_row = df_upload[df_upload["Label"] == "Post Date"]
         if raw_date_row.empty or pd.isna(raw_date_row.iloc[0]["Value"]):
           st.sidebar.error(
@@ -744,7 +741,6 @@ with st.sidebar.expander("📤 Scoped Post Ingestion"):
             profile_record_id = p_rec["id"]
             break
 
-        # Read fields safely and signal missing ones
         metric_fields = {
             "Impressions": read_field("Impressions"),
             "Reactions": read_field("Reactions"),
@@ -1572,42 +1568,69 @@ with tab_individual:
         if not df_metrics.empty
         else pd.DataFrame()
     )
-    current_month_data = (
-        profile_metrics[profile_metrics["YearMonth"] == selected_ym]
-        if not profile_metrics.empty and "YearMonth" in profile_metrics.columns
-        else pd.DataFrame()
-    )
 
     individual_posts = (
         df_posts[df_posts["Profile Name"] == selected_profile].copy()
         if not df_posts.empty
         else pd.DataFrame()
     )
-    month_posts = (
-        individual_posts[individual_posts["YearMonth"] == selected_ym]
-        if not individual_posts.empty and "YearMonth" in individual_posts.columns
-        else pd.DataFrame()
+
+    # -------------------------------------------------------------
+    # 📊 EXECUTIVE METRIC SCOPE TOGGLE (Selected Month vs Since Inception)
+    # -------------------------------------------------------------
+    exec_scope = st.radio(
+        "📊 Executive Metric Scope:",
+        ["Selected Month", "Since Inception"],
+        horizontal=True,
+        key=f"exec_scope_{selected_profile}_{selected_company}",
     )
 
+    if exec_scope == "Selected Month":
+      target_posts = (
+          individual_posts[individual_posts["YearMonth"] == selected_ym]
+          if not individual_posts.empty
+          and "YearMonth" in individual_posts.columns
+          else pd.DataFrame()
+      )
+      posts_metric_label = "Posts (This Month)"
+      display_posts_cnt = int(prof_row["Posts Published"])
+      display_views = int(prof_row["Views"])
+      display_app = int(prof_row["Appearances"])
+    else:  # "Since Inception"
+      target_posts = individual_posts
+      posts_metric_label = "Posts (Total Output)"
+      display_posts_cnt = len(individual_posts) if not individual_posts.empty else 0
+      display_views = (
+          int(profile_metrics["Profile views"].sum())
+          if not profile_metrics.empty
+          else 0
+      )
+      display_app = (
+          int(profile_metrics["Appearances"].sum())
+          if not profile_metrics.empty
+          else 0
+      )
+
+    # Dynamically compute audience quality metrics based on active scope (Month vs Inception)
     avg_dm_reach = (
-        month_posts["Decision-Maker Reach %"].mean() * 100
-        if not month_posts.empty
-        and "Decision-Maker Reach %" in month_posts.columns
+        target_posts["Decision-Maker Reach %"].mean() * 100
+        if not target_posts.empty
+        and "Decision-Maker Reach %" in target_posts.columns
         else 0.0
     )
     total_saves = (
-        month_posts["Saves"].sum()
-        if not month_posts.empty and "Saves" in month_posts.columns
+        target_posts["Saves"].sum()
+        if not target_posts.empty and "Saves" in target_posts.columns
         else 0
     )
     total_sends = (
-        month_posts["Sends on LinkedIn"].sum()
-        if not month_posts.empty and "Sends on LinkedIn" in month_posts.columns
+        target_posts["Sends on LinkedIn"].sum()
+        if not target_posts.empty and "Sends on LinkedIn" in target_posts.columns
         else 0
     )
     total_reposts = (
-        month_posts["Reposts"].sum()
-        if not month_posts.empty and "Reposts" in month_posts.columns
+        target_posts["Reposts"].sum()
+        if not target_posts.empty and "Reposts" in target_posts.columns
         else 0
     )
     total_high_intent = total_saves + total_sends + total_reposts
@@ -1615,10 +1638,10 @@ with tab_individual:
     accounts_seen = (
         [
             str(x)
-            for x in month_posts["Top Target Accounts"].dropna().unique()
+            for x in target_posts["Top Target Accounts"].dropna().unique()
             if str(x) != ""
         ]
-        if "Top Target Accounts" in month_posts.columns
+        if "Top Target Accounts" in target_posts.columns
         else []
     )
     accounts_summary_str = (
@@ -1630,10 +1653,10 @@ with tab_individual:
     industries_seen = (
         [
             str(x)
-            for x in month_posts["Top Core Industries"].dropna().unique()
+            for x in target_posts["Top Core Industries"].dropna().unique()
             if str(x) != ""
         ]
-        if "Top Core Industries" in month_posts.columns
+        if "Top Core Industries" in target_posts.columns
         else []
     )
     industries_summary_str = (
@@ -1642,9 +1665,15 @@ with tab_individual:
         else "No industrial tracking profiles mapped."
     )
 
+    # Prepare graphs for PDF compiler
+    month_posts_pdf = (
+        individual_posts[individual_posts["YearMonth"] == selected_ym]
+        if not individual_posts.empty and "YearMonth" in individual_posts.columns
+        else pd.DataFrame()
+    )
     b64_reach_pct, b64_members_reached, b64_eng_rate = "", "", ""
-    if not month_posts.empty:
-      pdf_plot_df = month_posts.copy().sort_values("Publish Date")
+    if not month_posts_pdf.empty:
+      pdf_plot_df = month_posts_pdf.copy().sort_values("Publish Date")
       pdf_plot_df["Post Label"] = (
           pdf_plot_df["Publish Date"].dt.strftime("%m-%d")
           + " - "
@@ -1749,11 +1778,19 @@ with tab_individual:
           f"{int(prof_row['SSI'])}/100",
           f"{prof_row['SSI MoM Shift']:+g} pts MoM",
       )
-      col3.metric("Posts (This Month)", f"{int(prof_row['Posts Published'])}")
-      col4.metric("Profile Views", f"{int(prof_row['Views']):,}")
-      col5.metric("Search Appearances", f"{int(prof_row['Appearances']):,}")
+      col3.metric(posts_metric_label, f"{display_posts_cnt:,}")
+      col4.metric(
+          "Profile Views",
+          f"{display_views:,}",
+          help="Snapshot views for month or total captured views since inception based on selected scope."
+      )
+      col5.metric(
+          "Search Appearances",
+          f"{display_app:,}",
+          help="Snapshot search appearances for month or total captured appearances since inception."
+      )
 
-      st.markdown("### 🎯 Audience Quality & Account Intelligence Index")
+      st.markdown(f"### 🎯 Audience Quality Index ({exec_scope})")
       aq_col1, aq_col2, aq_col3 = st.columns(3)
       aq_col1.metric(
           "Avg. Decision-Maker Reach",
