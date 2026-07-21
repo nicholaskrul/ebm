@@ -13,7 +13,7 @@ from urllib3.util import Retry
 from weasyprint import HTML
 
 # --- 1. APPLICATION CONFIGURATION & VERSIONING ---
-APP_VERSION = "5.2"
+APP_VERSION = "5.3"
 
 st.set_page_config(
     page_title=f"Executive Analytics Hub v{APP_VERSION}",
@@ -285,6 +285,7 @@ def fetch_raw_airtable_data():
         )
     )
 
+    # Persist data AND metadata to local disk cache for robust fallbacks
     try:
       df_m.to_parquet("metrics_disk.parquet")
       df_p.to_parquet("posts_disk.parquet")
@@ -351,7 +352,7 @@ all_companies_list = st.session_state.all_companies_list
 
 # --- 5. STREAMLINED COMPARTMENTALIZED SIDEBAR CONTROLLER ---
 st.sidebar.title("🏢 Navigation Control Panel")
-st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | Inception PDF Alignment**")
+st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | Matplotlib Transform Fix**")
 
 if not all_companies_list:
   st.error(
@@ -837,7 +838,7 @@ if st.sidebar.button("🔄 Sync Fresh Airtable Data", use_container_width=True):
   st.rerun()
 
 
-# --- 8. GRAPH ENGINE BASE64 EXPORT UTILITY ---
+# --- 8. GRAPH ENGINE BASE64 EXPORT UTILITY (Transform-Bug Shielded) ---
 def export_plot_to_b64(
     df_source, column_name, chart_type="line", color="#0a66c2"
 ):
@@ -855,10 +856,14 @@ def export_plot_to_b64(
   ax.tick_params(colors="#64748b", labelsize=8)
   ax.grid(axis="y", linestyle="--", alpha=0.5, color="#e2e8f0")
 
+  # Convert index and values to explicit primitive python lists to bypass Matplotlib-Pandas transform bugs
+  x_vals = [str(i) for i in df_source.index]
+  y_vals = pd.to_numeric(df_source[column_name], errors="coerce").fillna(0).tolist()
+
   if chart_type == "line":
     ax.plot(
-        df_source.index,
-        df_source[column_name],
+        x_vals,
+        y_vals,
         color=color,
         linewidth=2,
         marker="o",
@@ -866,8 +871,8 @@ def export_plot_to_b64(
     )
   elif chart_type == "bar":
     ax.bar(
-        df_source.index,
-        df_source[column_name],
+        x_vals,
+        y_vals,
         color=color,
         alpha=0.85,
         width=0.6,
