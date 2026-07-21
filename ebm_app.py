@@ -10,10 +10,29 @@ import requests
 from requests.adapters import HTTPAdapter
 import streamlit as st
 from urllib3.util import Retry
+
+# --- 0. RUNTIME PATCH FOR WEASYPRINT / PYDYF VERSION MISMATCH ---
+try:
+  import pydyf
+
+  if not hasattr(pydyf.Stream, "transform"):
+
+    def _pydyf_transform_patch(self, a=1, b=0, c=0, d=1, e=0, f=0):
+      cmd = f"{a:g} {b:g} {c:g} {d:g} {e:g} {f:g} cm\n".encode("ascii")
+      if hasattr(self, "stream"):
+        if isinstance(self.stream, list):
+          self.stream.append(cmd)
+        elif isinstance(self.stream, bytearray):
+          self.stream.extend(cmd)
+
+    pydyf.Stream.transform = _pydyf_transform_patch
+except Exception:
+  pass
+
 from weasyprint import HTML
 
 # --- 1. APPLICATION CONFIGURATION & VERSIONING ---
-APP_VERSION = "5.3"
+APP_VERSION = "5.4"
 
 st.set_page_config(
     page_title=f"Executive Analytics Hub v{APP_VERSION}",
@@ -285,7 +304,6 @@ def fetch_raw_airtable_data():
         )
     )
 
-    # Persist data AND metadata to local disk cache for robust fallbacks
     try:
       df_m.to_parquet("metrics_disk.parquet")
       df_p.to_parquet("posts_disk.parquet")
@@ -352,7 +370,7 @@ all_companies_list = st.session_state.all_companies_list
 
 # --- 5. STREAMLINED COMPARTMENTALIZED SIDEBAR CONTROLLER ---
 st.sidebar.title("🏢 Navigation Control Panel")
-st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | Matplotlib Transform Fix**")
+st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | PDF Engine Shield Active**")
 
 if not all_companies_list:
   st.error(
@@ -856,9 +874,11 @@ def export_plot_to_b64(
   ax.tick_params(colors="#64748b", labelsize=8)
   ax.grid(axis="y", linestyle="--", alpha=0.5, color="#e2e8f0")
 
-  # Convert index and values to explicit primitive python lists to bypass Matplotlib-Pandas transform bugs
+  # Convert index and values to explicit primitive Python lists to bypass Matplotlib-Pandas transform bugs
   x_vals = [str(i) for i in df_source.index]
-  y_vals = pd.to_numeric(df_source[column_name], errors="coerce").fillna(0).tolist()
+  y_vals = (
+      pd.to_numeric(df_source[column_name], errors="coerce").fillna(0).tolist()
+  )
 
   if chart_type == "line":
     ax.plot(
@@ -882,6 +902,19 @@ def export_plot_to_b64(
   fig.savefig(img_buf, format="png", bbox_inches="tight", dpi=150)
   img_buf.seek(0)
   return f"data:image/png;base64,{base64.b64encode(img_buf.read()).decode('utf-8')}"
+
+
+def make_img_card_html(b64_str, title_str):
+  if b64_str:
+    return (
+        f"<div class='chart-card'><div class='chart-title'>{title_str}</div><img"
+        f" src='{b64_str}' style='width:100%; height:auto;'></div>"
+    )
+  return (
+      f"<div class='chart-card'><div class='chart-title'>{title_str}</div><p"
+      " style='color:#94a3b8; font-size:8pt; padding:20px;'>No chart data"
+      " available.</p></div>"
+  )
 
 
 # --- 9. CACHED PDF REPORT COMPILERS ---
@@ -950,32 +983,12 @@ def generate_team_progress_pdf(
         </div>
         <table class='grid-table'>
             <tr>
-                <td>
-                    <div class='chart-card'>
-                        <div class='chart-title'>👥 Combined Follower Growth</div>
-                        <img src='__IMG_FOL__' style='width: 100%; height: auto;'>
-                    </div>
-                </td>
-                <td>
-                    <div class='chart-card'>
-                        <div class='chart-title'>👀 Combined Profile Views</div>
-                        <img src='__IMG_VIEWS__' style='width: 100%; height: auto;'>
-                    </div>
-                </td>
+                <td>__CARD_FOL__</td>
+                <td>__CARD_VIEWS__</td>
             </tr>
             <tr>
-                <td>
-                    <div class='chart-card'>
-                        <div class='chart-title'>🔍 Combined Platform-Wide Visibility</div>
-                        <img src='__IMG_APP__' style='width: 100%; height: auto;'>
-                    </div>
-                </td>
-                <td>
-                    <div class='chart-card'>
-                        <div class='chart-title'>📈 Rolling Average Social Selling Index (SSI)</div>
-                        <img src='__IMG_SSI__' style='width: 100%; height: auto;'>
-                    </div>
-                </td>
+                <td>__CARD_APP__</td>
+                <td>__CARD_SSI__</td>
             </tr>
         </table>
     </body></html>
@@ -1041,10 +1054,23 @@ def generate_team_progress_pdf(
           "__AVG_SSI__",
           f"{int(df_source['SSI'].mean()) if not df_source.empty else 0}/100",
       )
-      .replace("__IMG_FOL__", b64_fol)
-      .replace("__IMG_VIEWS__", b64_views)
-      .replace("__IMG_APP__", b64_app)
-      .replace("__IMG_SSI__", b64_ssi)
+      .replace(
+          "__CARD_FOL__", make_img_card_html(b64_fol, "👥 Combined Follower Growth")
+      )
+      .replace(
+          "__CARD_VIEWS__",
+          make_img_card_html(b64_views, "👀 Combined Profile Views"),
+      )
+      .replace(
+          "__CARD_APP__",
+          make_img_card_html(b64_app, "🔍 Combined Platform-Wide Visibility"),
+      )
+      .replace(
+          "__CARD_SSI__",
+          make_img_card_html(
+              b64_ssi, "📈 Rolling Average Social Selling Index (SSI)"
+          ),
+      )
   )
 
   buf = io.BytesIO()
@@ -1140,32 +1166,12 @@ def generate_single_progress_pdf(
         <div class='header'><h1>📊 Core Strategic Performance Vectors (All-Time History)</h1></div>
         <table class='grid-table'>
             <tr>
-                <td>
-                    <div class='chart-card'>
-                        <div class='chart-title'>📈 Total Followers</div>
-                        <img src='__CHART_FOL__' style='width:100%; height:auto;'>
-                    </div>
-                </td>
-                <td>
-                    <div class='chart-card'>
-                        <div class='chart-title'>🛡️ Social Selling Index (SSI) Tracker</div>
-                        <img src='__CHART_SSI__' style='width:100%; height:auto;'>
-                    </div>
-                </td>
+                <td>__CARD_IND_FOL__</td>
+                <td>__CARD_IND_SSI__</td>
             </tr>
             <tr>
-                <td>
-                    <div class='chart-card'>
-                        <div class='chart-title'>🔍 Platform-Wide Profile Appearances</div>
-                        <img src='__CHART_APP__' style='width:100%; height:auto;'>
-                    </div>
-                </td>
-                <td>
-                    <div class='chart-card'>
-                        <div class='chart-title'>👀 Profile Views</div>
-                        <img src='__CHART_VIEWS__' style='width:100%; height:auto;'>
-                    </div>
-                </td>
+                <td>__CARD_IND_APP__</td>
+                <td>__CARD_IND_VIEWS__</td>
             </tr>
         </table>
 
@@ -1212,56 +1218,48 @@ def generate_single_progress_pdf(
         monthly_posts_perf, "Engagement", "bar", "#1db954"
     )
 
+    card_p_imp = make_img_card_html(
+        b64_post_imp, "📈 Total Organic Post Impressions"
+    )
+    card_p_eng = make_img_card_html(
+        b64_post_eng, "❤️ Total Post Engagement Interactions"
+    )
+
     content_section_html = f"""
         <div class="page-break"></div>
-        <div class='header'><h1>📝 Monthly Content Performance Logs (Historical Vectors)</h1></div>
+        <div class='header'><h1>📝 Content Performance Logs (Historical Vectors)</h1></div>
         <table class='grid-table'>
             <tr>
-                <td>
-                    <div class='chart-card'>
-                        <div class='chart-title'>📈 Total Organic Post Impressions by Calendar Month</div>
-                        <img src='{b64_post_imp}' style='width:100%; height:auto;'>
-                    </div>
-                </td>
-                <td>
-                    <div class='chart-card'>
-                        <div class='chart-title'>❤️ Total Post Engagement Interactions by Calendar Month</div>
-                        <img src='{b64_post_eng}' style='width:100%; height:auto;'>
-                    </div>
-                </td>
+                <td>{card_p_imp}</td>
+                <td>{card_p_eng}</td>
             </tr>
         </table>
         """
 
   ind_posts_section_html = ""
-  if b64_reach_pct and b64_members_reached and b64_eng_rate:
+  if b64_reach_pct or b64_members_reached or b64_eng_rate:
+    card_reach = make_img_card_html(
+        b64_reach_pct, "🎯 Organic Reach % (Impressions / Total Followers)"
+    )
+    card_members = make_img_card_html(
+        b64_members_reached, "👥 Unique Members Reached"
+    )
+    card_eng_rate = make_img_card_html(
+        b64_eng_rate, "⚡ Engagement Rate % (Total Engagement / Impressions)"
+    )
+
     ind_posts_section_html = f"""
         <div class="page-break"></div>
         <div class='header'><h1>📊 Single-Post Performance Breakdown ({horizon_str})</h1></div>
         <table class='grid-table'>
             <tr>
-                <td>
-                    <div class='chart-card'>
-                        <div class='chart-title'>🎯 Organic Reach % (Impressions / Total Followers)</div>
-                        <img src='{b64_reach_pct}' style='width:100%; height:auto;'>
-                    </div>
-                </td>
-                <td>
-                    <div class='chart-card'>
-                        <div class='chart-title'>👥 Unique Members Reached</div>
-                        <img src='{b64_members_reached}' style='width:100%; height:auto;'>
-                    </div>
-                </td>
+                <td>{card_reach}</td>
+                <td>{card_members}</td>
             </tr>
         </table>
         <table class='grid-table' style='margin-top: 15px;'>
             <tr>
-                <td style='width: 100%;'>
-                    <div class='chart-card'>
-                        <div class='chart-title'>⚡ Engagement Rate % (Total Engagement / Impressions)</div>
-                        <img src='{b64_eng_rate}' style='width:100%; height:auto;'>
-                    </div>
-                </td>
+                <td style='width: 100%;'>{card_eng_rate}</td>
             </tr>
         </table>
         """
@@ -1287,10 +1285,26 @@ def generate_single_progress_pdf(
       .replace("__TARGET_INDUSTRIES__", industries_str)
       .replace("__SAVED_SHARED__", f"{int(total_high_intent)}")
       .replace("__COMMENTARY__", comment_html)
-      .replace("__CHART_FOL__", b64_ind_fol)
-      .replace("__CHART_SSI__", b64_ind_ssi)
-      .replace("__CHART_APP__", b64_ind_app)
-      .replace("__CHART_VIEWS__", b64_ind_views)
+      .replace(
+          "__CARD_IND_FOL__",
+          make_img_card_html(b64_ind_fol, "📈 Total Followers"),
+      )
+      .replace(
+          "__CARD_IND_SSI__",
+          make_img_card_html(
+              b64_ind_ssi, "🛡️ Social Selling Index (SSI) Tracker"
+          ),
+      )
+      .replace(
+          "__CARD_IND_APP__",
+          make_img_card_html(
+              b64_ind_app, "🔍 Platform-Wide Profile Appearances"
+          ),
+      )
+      .replace(
+          "__CARD_IND_VIEWS__",
+          make_img_card_html(b64_ind_views, "👀 Profile Views"),
+      )
       .replace("__CONTENT_SECTION__", content_section_html)
       .replace("__INDIVIDUAL_POSTS_SECTION__", ind_posts_section_html)
   )
