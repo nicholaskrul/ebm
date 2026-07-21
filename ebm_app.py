@@ -11,28 +11,57 @@ from requests.adapters import HTTPAdapter
 import streamlit as st
 from urllib3.util import Retry
 
-# --- 0. RUNTIME PATCH FOR WEASYPRINT / PYDYF VERSION MISMATCH ---
+# --- 0. RUNTIME PATCH FOR WEASYPRINT / PYDYF MATRIX METHOD MISMATCHES ---
 try:
   import pydyf
 
+  # Patch missing 'transform' method
   if not hasattr(pydyf.Stream, "transform"):
+    if hasattr(pydyf.Stream, "set_matrix"):
+      pydyf.Stream.transform = (
+          lambda self, a=1, b=0, c=0, d=1, e=0, f=0: self.set_matrix(
+              a, b, c, d, e, f
+          )
+      )
+    else:
 
-    def _pydyf_transform_patch(self, a=1, b=0, c=0, d=1, e=0, f=0):
-      cmd = f"{a:g} {b:g} {c:g} {d:g} {e:g} {f:g} cm\n".encode("ascii")
-      if hasattr(self, "stream"):
-        if isinstance(self.stream, list):
-          self.stream.append(cmd)
-        elif isinstance(self.stream, bytearray):
-          self.stream.extend(cmd)
+      def _pydyf_transform_patch(self, a=1, b=0, c=0, d=1, e=0, f=0):
+        cmd = f"{a:g} {b:g} {c:g} {d:g} {e:g} {f:g} cm\n".encode("ascii")
+        if hasattr(self, "stream"):
+          if isinstance(self.stream, list):
+            self.stream.append(cmd)
+          elif isinstance(self.stream, bytearray):
+            self.stream.extend(cmd)
 
-    pydyf.Stream.transform = _pydyf_transform_patch
+      pydyf.Stream.transform = _pydyf_transform_patch
+
+  # Patch missing 'text_matrix' method
+  if not hasattr(pydyf.Stream, "text_matrix"):
+    if hasattr(pydyf.Stream, "set_text_matrix"):
+      pydyf.Stream.text_matrix = (
+          lambda self, a=1, b=0, c=0, d=1, e=0, f=0: self.set_text_matrix(
+              a, b, c, d, e, f
+          )
+      )
+    else:
+
+      def _pydyf_text_matrix_patch(self, a=1, b=0, c=0, d=1, e=0, f=0):
+        cmd = f"{a:g} {b:g} {c:g} {d:g} {e:g} {f:g} Tm\n".encode("ascii")
+        if hasattr(self, "stream"):
+          if isinstance(self.stream, list):
+            self.stream.append(cmd)
+          elif isinstance(self.stream, bytearray):
+            self.stream.extend(cmd)
+
+      pydyf.Stream.text_matrix = _pydyf_text_matrix_patch
+
 except Exception:
   pass
 
 from weasyprint import HTML
 
 # --- 1. APPLICATION CONFIGURATION & VERSIONING ---
-APP_VERSION = "5.4"
+APP_VERSION = "5.5"
 
 st.set_page_config(
     page_title=f"Executive Analytics Hub v{APP_VERSION}",
@@ -370,7 +399,7 @@ all_companies_list = st.session_state.all_companies_list
 
 # --- 5. STREAMLINED COMPARTMENTALIZED SIDEBAR CONTROLLER ---
 st.sidebar.title("🏢 Navigation Control Panel")
-st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | PDF Engine Shield Active**")
+st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | Complete Matrix Patch Active**")
 
 if not all_companies_list:
   st.error(
@@ -856,7 +885,7 @@ if st.sidebar.button("🔄 Sync Fresh Airtable Data", use_container_width=True):
   st.rerun()
 
 
-# --- 8. GRAPH ENGINE BASE64 EXPORT UTILITY (Transform-Bug Shielded) ---
+# --- 8. GRAPH ENGINE BASE64 EXPORT UTILITY ---
 def export_plot_to_b64(
     df_source, column_name, chart_type="line", color="#0a66c2"
 ):
@@ -874,7 +903,7 @@ def export_plot_to_b64(
   ax.tick_params(colors="#64748b", labelsize=8)
   ax.grid(axis="y", linestyle="--", alpha=0.5, color="#e2e8f0")
 
-  # Convert index and values to explicit primitive Python lists to bypass Matplotlib-Pandas transform bugs
+  # Convert index and values to explicit primitive Python lists to bypass Matplotlib transform bugs
   x_vals = [str(i) for i in df_source.index]
   y_vals = (
       pd.to_numeric(df_source[column_name], errors="coerce").fillna(0).tolist()
@@ -1310,7 +1339,7 @@ def generate_single_progress_pdf(
   )
 
   buf = io.BytesIO()
-  HTML(string=f_html).write_pdf(buf)
+  HTML(string=final_html).write_pdf(buf)
   return buf.getvalue()
 
 
