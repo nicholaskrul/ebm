@@ -12,7 +12,7 @@ from urllib3.util import Retry
 from weasyprint import HTML
 
 # --- 1. APPLICATION CONFIGURATION & VERSIONING ---
-APP_VERSION = "4.4"
+APP_VERSION = "4.5"
 
 st.set_page_config(
     page_title=f"Executive Analytics Hub v{APP_VERSION}",
@@ -27,8 +27,8 @@ BASE_ID = st.secrets["airtable"]["base_id"]
 
 if not AIRTABLE_TOKEN or not BASE_ID:
   st.error(
-      "❌ Configuration Missing! Define your `AIRTABLE_TOKEN` and `BASE_ID`"
-      " inside your secret management dashboard."
+      "❌ Configuration Missing! Define your `AIRTABLE_TOKEN` and `BASE_ID` inside"
+      " your secret management dashboard."
   )
   st.stop()
 
@@ -75,7 +75,7 @@ def fetch_raw_airtable_data():
     raw_metrics = metrics_table.all(formula=metrics_filter)
     raw_posts = posts_table.all(formula=posts_filter)
 
-    # 1. Map Company IDs to metadata details (with default column fallbacks)
+    # 1. Map Company IDs to metadata details
     id_to_company = {}
     for r in raw_companies:
       fields = r["fields"]
@@ -325,7 +325,7 @@ all_companies_list = st.session_state.all_companies_list
 
 # --- 5. STREAMLINED COMPARTMENTALIZED SIDEBAR CONTROLLER ---
 st.sidebar.title("🏢 Navigation Control Panel")
-st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | Form Stability Enhanced**")
+st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | Reliable Ingestion Engine**")
 
 if not all_companies_list:
   st.error(
@@ -517,26 +517,38 @@ def sync_from_ind(name):
   st.session_state[f"team_notes_{name}"] = val
 
 
-# --- 7. SCOPED POST INGESTION ENGINE (Static Key + Form Encapsulated) ---
-with st.sidebar.expander("📤 Scoped Post Ingestion"):
-  with st.form("post_ingestion_form", clear_on_submit=True):
-    st.markdown("### Process Single-Post Export")
-    target_upload_profile = st.selectbox(
-        "Assign Post Data To:", all_profiles_list, key="upload_exec_select"
-    )
-    uploaded_post_file = st.file_uploader(
-        "Upload LinkedIn Excel / CSV",
-        type=["xlsx", "csv"],
-        key="post_file_uploader_widget",  # Stable static key prevents WebSocket SessionInfo crashes
-    )
-    entered_topic = st.text_input(
-        "Content Topic / Context", placeholder="e.g., Q3 Keynote Address"
-    )
-    submit_post = st.form_submit_button(
-        "🚀 Push Post to Database", use_container_width=True
-    )
+# --- 7. SCOPED POST INGESTION ENGINE (Dynamic Key Versioning Engine) ---
+if "uploader_id" not in st.session_state:
+  st.session_state.uploader_id = 0
 
-  if submit_post:
+with st.sidebar.expander("📤 Scoped Post Ingestion"):
+  # Display persistent status message after page rerun if set
+  if (
+      "last_upload_status" in st.session_state
+      and st.session_state.last_upload_status
+  ):
+    st.success(st.session_state.last_upload_status)
+    st.session_state.last_upload_status = None
+
+  st.markdown("### Process Single-Post Export")
+  target_upload_profile = st.selectbox(
+      "Assign Post Data To:", all_profiles_list, key="upload_exec_select"
+  )
+
+  # Dynamic key initialization ensures each upload gets a pristine, fresh file uploader widget
+  uploaded_post_file = st.file_uploader(
+      "Upload LinkedIn Excel / CSV",
+      type=["xlsx", "csv"],
+      key=f"post_uploader_{st.session_state.uploader_id}",
+  )
+
+  entered_topic = st.text_input(
+      "Content Topic / Context",
+      placeholder="e.g., Q3 Keynote Address",
+      key=f"topic_input_{st.session_state.uploader_id}",
+  )
+
+  if st.button("🚀 Push Post to Database", use_container_width=True):
     if uploaded_post_file is None:
       st.sidebar.warning(
           "⚠️ Please attach a LinkedIn export file before submitting."
@@ -689,7 +701,14 @@ with st.sidebar.expander("📤 Scoped Post Ingestion"):
             ignore_index=True,
         )
 
-        st.sidebar.success("🎉 Ingestion complete! Post pushed to database.")
+        # Advance uploader version to force a clean widget instance on next render
+        st.session_state.uploader_id += 1
+        st.session_state.last_upload_status = (
+            f"🎉 Success! Ingested post for {target_upload_profile}."
+        )
+
+        # Trigger clean rerun to refresh dashboard visuals with newly ingested post
+        st.rerun()
       except Exception as parse_ex:
         error_details = str(parse_ex)
         if hasattr(parse_ex, "response") and parse_ex.response is not None:
