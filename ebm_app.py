@@ -11,9 +11,11 @@ from matplotlib.figure import Figure
 import base64
 from weasyprint import HTML
 
-# --- 1. APPLICATION CONFIGURATION ---
+# --- 1. APPLICATION CONFIGURATION & VERSIONING ---
+APP_VERSION = "4.0"
+
 st.set_page_config(
-    page_title="Executive Portfolio Analytics Hub",
+    page_title=f"Executive Analytics Hub v{APP_VERSION}",
     page_icon="💼",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -55,8 +57,8 @@ metrics_table = api.table(BASE_ID, "Weekly Metrics")
 posts_table = api.table(BASE_ID, "Posts and content")
 
 
-# --- 3. DATA RECONCILIATION ENGINE (Disk Backup + Date Filtered) ---
-@st.cache_data(ttl=86400, show_spinner=False)
+# --- 3. DATA RECONCILIATION ENGINE (Disk Backup + Dynamic Schema Resolver) ---
+@st.cache_data(ttl=86400, show_spinner=False)  # 24-hour persistent cache
 def fetch_raw_airtable_data():
     try:
         metrics_filter = "DATETIME_DIFF(TODAY(), {Date}, 'days') <= 365"
@@ -67,7 +69,7 @@ def fetch_raw_airtable_data():
         raw_metrics = metrics_table.all(formula=metrics_filter)
         raw_posts = posts_table.all(formula=posts_filter)
 
-        # 1. Map Company IDs to metadata details
+        # 1. Map Company IDs to metadata details (with default column fallbacks)
         id_to_company = {}
         for r in raw_companies:
             fields = r['fields']
@@ -80,7 +82,7 @@ def fetch_raw_airtable_data():
                 'Logo URL': fields.get('Logo URL', '')
             }
 
-        # 2. Map Profile IDs
+        # 2. Map Profile IDs to metadata
         profile_map = {}
         for r in raw_profiles:
             fields = r['fields']
@@ -200,6 +202,7 @@ def fetch_raw_airtable_data():
 
         all_companies = sorted(list(set([info['Company Name'] for info in id_to_company.values() if info['Company Name'] != 'Unknown Company'])))
 
+        # Save Disk Backup (0 API calls on server wake up)
         try:
             df_m.to_parquet("metrics_disk.parquet")
             df_p.to_parquet("posts_disk.parquet")
@@ -239,6 +242,7 @@ all_companies_list = st.session_state.all_companies_list
 
 # --- 5. GLOBAL MULTI-TENANT FILTER & SCOPING CONTROLLER ---
 st.sidebar.title("🏢 Agency Control Panel")
+st.sidebar.caption(f"🚀 **Analytics Hub Build v{APP_VERSION}**")
 
 # Manual Refresh Button
 if st.sidebar.button("🔄 Sync Fresh Airtable Data", use_container_width=True):
@@ -282,7 +286,7 @@ st.markdown(f'''
 </style>
 ''', unsafe_allow_html=True)
 
-# Timelines scoping
+# Timelines scoping across both datasets
 if not df_metrics.empty:
     df_metrics['YearMonth'] = df_metrics['Date'].dt.to_period('M')
     months_from_metrics = df_metrics['YearMonth'].dropna().unique().tolist()
@@ -521,7 +525,7 @@ def generate_team_progress_pdf(df_source, trends_df, manager_notes, horizon_str,
         <div class='header'>
             {logo_html}
             <h1>{company_name} — Executive Portfolio Progress Report</h1>
-            <p class='subtitle'>Combined Standings Tracker & Performance Horizons Index — __HORIZON__</p>
+            <p class='subtitle'>Combined Standings Tracker & Performance Horizons Index — __HORIZON__ (v{APP_VERSION})</p>
         </div>
         <div style='display: table; width: 100%; margin-bottom: 12px;'>
             <div style='display: table-cell; background: white; border: 1px solid #cbd5e1; padding: 10px; text-align: center;'><strong>Total Follower Count:</strong> __TOTAL_REACH__</div>
@@ -653,7 +657,7 @@ def generate_single_progress_pdf(hist_metrics, content_df, manager_notes_str, se
         <div class='header'>
             {logo_html}
             <h1>__NAME__</h1>
-            <p class='title'>__TITLE__ — Executive Performance Brief (__MONTH__)</p>
+            <p class='title'>__TITLE__ — Executive Performance Brief (__MONTH__) [v{APP_VERSION}]</p>
         </div>
         <div class='card'>
             <div class='val'>__FOL_CURR__</div>
@@ -1108,7 +1112,6 @@ with tab_individual:
             st.markdown("---")
             st.subheader("📝 Content Performance Analysis")
 
-            # NEW: Content Analysis Timeframe Selector (Month / Year / All Time)
             if not individual_posts.empty:
                 c_timeframe = st.radio(
                     "Select Content Horizon:",
