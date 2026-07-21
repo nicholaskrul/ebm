@@ -12,7 +12,7 @@ import base64
 from weasyprint import HTML
 
 # --- 1. APPLICATION CONFIGURATION & VERSIONING ---
-APP_VERSION = "4.2"
+APP_VERSION = "4.3"
 
 st.set_page_config(
     page_title=f"Executive Analytics Hub v{APP_VERSION}",
@@ -69,7 +69,7 @@ def fetch_raw_airtable_data():
         raw_metrics = metrics_table.all(formula=metrics_filter)
         raw_posts = posts_table.all(formula=posts_filter)
 
-        # 1. Map Company IDs to metadata details (with default column fallbacks)
+        # 1. Map Company IDs to metadata details
         id_to_company = {}
         for r in raw_companies:
             fields = r['fields']
@@ -107,7 +107,7 @@ def fetch_raw_airtable_data():
                 'Logo URL': comp_info['Logo URL']
             }
 
-        # 3. Process Metrics Dataset with mapped company tags
+        # 3. Process Metrics Dataset
         metrics_data = []
         for r in raw_metrics:
             fields = r['fields'].copy()
@@ -145,7 +145,7 @@ def fetch_raw_airtable_data():
         else:
             df_m = pd.DataFrame(columns=['Profile Name', 'Job Title', 'Company Name', 'Brand Color', 'Logo URL', 'Date', 'YearMonth', 'Total followers', 'SSI', 'Profile views', 'Appearances'])
 
-        # 4. Process Content Logs Dataset with mapped company tags
+        # 4. Process Content Logs Dataset
         posts_data = []
         for r in raw_posts:
             fields = r['fields'].copy()
@@ -203,7 +203,6 @@ def fetch_raw_airtable_data():
 
         all_companies = sorted(list(set([info['Company Name'] for info in id_to_company.values() if info['Company Name'] != 'Unknown Company'])))
 
-        # Save local cache backup for instant container wake ups
         try:
             df_m.to_parquet("metrics_disk.parquet")
             df_p.to_parquet("posts_disk.parquet")
@@ -245,7 +244,7 @@ all_companies_list = st.session_state.all_companies_list
 
 # --- 5. STREAMLINED COMPARTMENTALIZED SIDEBAR CONTROLLER ---
 st.sidebar.title("🏢 Navigation Control Panel")
-st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | Enterprise Engine**")
+st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | Ingestion Shield Active**")
 
 if not all_companies_list:
     st.error("❌ No valid companies found in your database mapping. Add a company to your Companies table in Airtable first.")
@@ -352,15 +351,22 @@ def sync_from_ind(name):
     st.session_state[f"team_notes_{name}"] = val
 
 
-# --- 7. SCOPED POST INGESTION ENGINE ---
-with st.sidebar.expander("📤 Scoped Post Ingestion"):
-    st.markdown("### Process Single-Post Export")
-    target_upload_profile = st.selectbox("Assign Post Data To:", all_profiles_list, key="upload_exec_select")
-    uploaded_post_file = st.file_uploader("Upload LinkedIn Excel / CSV", type=["xlsx", "csv"])
-    entered_topic = st.text_input("Content Topic / Context", placeholder="e.g., Q3 Keynote Address")
+# --- 7. SCOPED POST INGESTION ENGINE (Form-Encapsulated to Prevent SessionInfo Crash) ---
+if "uploader_key" not in st.session_state:
+    st.session_state.uploader_key = 0
 
-    if uploaded_post_file is not None:
-        if st.button("🚀 Push Post to Database", use_container_width=True):
+with st.sidebar.expander("📤 Scoped Post Ingestion"):
+    with st.form("post_ingestion_form", clear_on_submit=True):
+        st.markdown("### Process Single-Post Export")
+        target_upload_profile = st.selectbox("Assign Post Data To:", all_profiles_list, key="upload_exec_select")
+        uploaded_post_file = st.file_uploader("Upload LinkedIn Excel / CSV", type=["xlsx", "csv"], key=f"uploader_widget_{st.session_state.uploader_key}")
+        entered_topic = st.text_input("Content Topic / Context", placeholder="e.g., Q3 Keynote Address")
+        submit_post = st.form_submit_button("🚀 Push Post to Database", use_container_width=True)
+
+    if submit_post:
+        if uploaded_post_file is None:
+            st.sidebar.warning("⚠️ Please attach a LinkedIn export file before submitting.")
+        else:
             try:
                 df_upload = None
                 if uploaded_post_file.name.endswith('.csv'):
@@ -467,8 +473,9 @@ with st.sidebar.expander("📤 Scoped Post Ingestion"):
                     ignore_index=True
                 )
 
-                st.sidebar.success("🎉 Ingestion complete! Post written to Airtable & injected locally.")
-                st.rerun()
+                # Reset uploader buffer key to clear widget without forcing a WebSocket-breaking rerun
+                st.session_state.uploader_key += 1
+                st.sidebar.success("🎉 Ingestion complete! Post pushed to database.")
             except Exception as parse_ex:
                 error_details = str(parse_ex)
                 if hasattr(parse_ex, 'response') and parse_ex.response is not None:
@@ -844,7 +851,6 @@ def compute_profile_standings(df_metrics_source, df_posts_source, target_profile
     for name in target_profiles:
         pm = df_metrics_source[df_metrics_source['Profile Name'] == name].sort_values('Date') if (not df_metrics_source.empty and 'Profile Name' in df_metrics_source.columns) else pd.DataFrame()
 
-        # Safely handle empty metrics or missing YearMonth columns
         if pm.empty or 'YearMonth' not in pm.columns:
             job_title = 'Executive'
             followers_curr, followers_mom, followers_inc = 0, 0.0, 0
