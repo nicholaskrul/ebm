@@ -61,7 +61,7 @@ except Exception:
 from weasyprint import HTML
 
 # --- 1. APPLICATION CONFIGURATION & VERSIONING ---
-APP_VERSION = "5.6"
+APP_VERSION = "6.0"
 
 st.set_page_config(
     page_title=f"Executive Analytics Hub v{APP_VERSION}",
@@ -399,7 +399,9 @@ all_companies_list = st.session_state.all_companies_list
 
 # --- 5. STREAMLINED COMPARTMENTALIZED SIDEBAR CONTROLLER ---
 st.sidebar.title("🏢 Navigation Control Panel")
-st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | HTML Name Fix Active**")
+st.sidebar.caption(
+    f"🚀 **Build v{APP_VERSION} | Weekly Metrics Ingestion Active**"
+)
 
 if not all_companies_list:
   st.error(
@@ -591,7 +593,280 @@ def sync_from_ind(name):
   st.session_state[f"team_notes_{name}"] = val
 
 
-# --- 7. SCOPED POST INGESTION ENGINE ---
+# --- 7A. WEEKLY METRICS INGESTION ENGINE (Batch Multi-Profile Uploader) ---
+if "metrics_uploader_id" not in st.session_state:
+  st.session_state.metrics_uploader_id = 0
+
+EXPECTED_METRIC_HEADERS = {
+    "account": [
+        "Account_Name",
+        "Account Name",
+        "Account",
+        "Profile Name",
+        "Profile",
+        "Full Name",
+        "Name",
+        "Executive",
+    ],
+    "date": [
+        "Timestamp",
+        "Date",
+        "Recorded Date",
+        "Created Time",
+        "Post Date",
+    ],
+    "ssi": ["SSI_Score", "SSI Score", "SSI", "Social Selling Index"],
+    "views": [
+        "Profile_Views_90d",
+        "Profile_Views",
+        "Profile Views",
+        "Profile views",
+        "Views",
+    ],
+    "appearances": [
+        "Search_Appearances_7d",
+        "Search_Appearances",
+        "Search Appearances",
+        "Appearances",
+    ],
+    "followers": [
+        "Total_Followers",
+        "Total Followers",
+        "Followers",
+        "Total followers",
+    ],
+}
+
+
+def detect_metrics_columns(df_in):
+  cols_map = {str(c).strip(): c for c in df_in.columns}
+  col_found = {}
+  for key_name, candidates in EXPECTED_METRIC_HEADERS.items():
+    for cand in candidates:
+      matched = [
+          orig for norm, orig in cols_map.items() if norm.lower() == cand.lower()
+      ]
+      if matched:
+        col_found[key_name] = matched[0]
+        break
+  return col_found
+
+
+def clean_num_val(val):
+  if pd.isna(val):
+    return 0
+  val_str = str(val).replace(",", "").replace(" ", "").strip()
+  try:
+    return int(float(val_str))
+  except Exception:
+    import re
+
+    digits = re.sub(r"[^\d]", "", val_str)
+    return int(digits) if digits else 0
+
+
+with st.sidebar.expander("📊 Weekly Metrics Ingestion"):
+  if (
+      "last_metrics_upload_status" in st.session_state
+      and st.session_state.last_metrics_upload_status
+  ):
+    st.success(st.session_state.last_metrics_upload_status)
+    st.session_state.last_metrics_upload_status = None
+
+  st.markdown("### Upload Weekly CSV / Excel")
+  uploaded_metrics_file = st.file_uploader(
+      "Attach Executive Weekly Snapshot",
+      type=["csv", "xlsx"],
+      key=f"metrics_uploader_{st.session_state.metrics_uploader_id}",
+  )
+
+  if st.button("🚀 Push Weekly Metrics to Database", use_container_width=True):
+    if uploaded_metrics_file is None:
+      st.sidebar.warning("⚠️ Please attach a metrics file before submitting.")
+    else:
+      try:
+        df_m_up = None
+        if uploaded_metrics_file.name.endswith(".csv"):
+          encodings = ["utf-8", "utf-16", "utf-16-le", "latin1"]
+          separators = [",", "\t", ";"]
+          for enc in encodings:
+            for sep in separators:
+              try:
+                uploaded_metrics_file.seek(0)
+                df_test = pd.read_csv(
+                    uploaded_metrics_file, sep=sep, encoding=enc
+                )
+                detected = detect_metrics_columns(df_test)
+                if "account" in detected and (
+                    "followers" in detected or "ssi" in detected
+                ):
+                  df_m_up = df_test
+                  break
+              except (UnicodeDecodeError, pd.errors.ParserError, ValueError):
+                continue
+            if df_m_up is not None:
+              break
+        else:
+          df_test = pd.read_excel(uploaded_metrics_file)
+          detected = detect_metrics_columns(df_test)
+          if "account" in detected and (
+              "followers" in detected or "ssi" in detected
+          ):
+            df_m_up = df_test
+
+        if df_m_up is None:
+          st.sidebar.error(
+              "❌ Could not parse metrics file. Expected headers like"
+              " 'Account_Name', 'Timestamp', 'SSI_Score', 'Total_Followers'."
+          )
+          st.stop()
+
+        m_map = detect_metrics_columns(df_m_up)
+        if "account" not in m_map or "date" not in m_map:
+          st.sidebar.error(
+              "❌ Missing required columns: Account_Name and Timestamp / Date."
+          )
+          st.stop()
+
+        # Format dates & deduplicate intra-file captures per (Account, Date)
+        df_m_up["Date_Clean"] = pd.to_datetime(
+            df_m_up[m_map["date"]], errors="coerce"
+        ).dt.strftime("%Y-%m-%d")
+        df_m_up = df_m_up.dropna(subset=["Date_Clean"])
+
+        account_col = m_map["account"]
+        df_m_up[account_col] = df_m_up[account_col].astype(str).str.strip()
+        df_m_up = df_m_up.drop_duplicates(
+            subset=[account_col, "Date_Clean"], keep="last"
+        )
+
+        payloads_to_create = []
+        new_local_rows = []
+        skipped_info = []
+
+        # Reference existing metrics for duplicate protection
+        existing_m = st.session_state.df_metrics_raw
+
+        for _, row in df_m_up.iterrows():
+          raw_account = str(row[account_col]).strip()
+          clean_date = row["Date_Clean"]
+
+          # Find profile in profile_map_raw or raw_profiles_raw
+          matched_p_id = None
+          p_info = None
+
+          for p_id, p_meta in profile_map_raw.items():
+            if p_meta.get("Full Name", "").strip().lower() == raw_account.lower():
+              matched_p_id = p_id
+              p_info = p_meta
+              break
+
+          if not matched_p_id:
+            for p_rec in raw_profiles_raw:
+              if (
+                  p_rec["fields"].get("Full Name", "").strip().lower()
+                  == raw_account.lower()
+              ):
+                matched_p_id = p_rec["id"]
+                comp_links = p_rec["fields"].get("Company", [])
+                p_info = {
+                    "Full Name": p_rec["fields"].get("Full Name", raw_account),
+                    "Job Title": p_rec["fields"].get("Job Title", "Executive"),
+                    "Company Name": selected_company,
+                    "Brand Color": client_brand_color,
+                    "Logo URL": client_logo_url,
+                }
+                break
+
+          if not matched_p_id or not p_info:
+            skipped_info.append(
+                f"• Profile '{raw_account}' not recognized in Airtable."
+            )
+            continue
+
+          # Check for duplicate record on exact (Profile, Date)
+          if not existing_m.empty:
+            is_dup = (
+                (existing_m["Profile Name"] == p_info["Full Name"])
+                & (existing_m["Date"].dt.strftime("%Y-%m-%d") == clean_date)
+            ).any()
+            if is_dup:
+              skipped_info.append(
+                  f"• Entry for '{p_info['Full Name']}' on {clean_date} already"
+                  " exists (Skipped)."
+              )
+              continue
+
+          followers_v = (
+              clean_num_val(row[m_map["followers"]])
+              if "followers" in m_map
+              else 0
+          )
+          ssi_v = clean_num_val(row[m_map["ssi"]]) if "ssi" in m_map else 0
+          views_v = clean_num_val(row[m_map["views"]]) if "views" in m_map else 0
+          app_v = (
+              clean_num_val(row[m_map["appearances"]])
+              if "appearances" in m_map
+              else 0
+          )
+
+          payload = {
+              "Profile": [matched_p_id],
+              "Date": clean_date,
+              "Total followers": followers_v,
+              "SSI": ssi_v,
+              "Profile views": views_v,
+              "Appearances": app_v,
+          }
+          payloads_to_create.append(payload)
+
+          local_r = payload.copy()
+          local_r["Profile Name"] = p_info["Full Name"]
+          local_r["Job Title"] = p_info["Job Title"]
+          local_r["Company Name"] = p_info["Company Name"]
+          local_r["Brand Color"] = p_info["Brand Color"]
+          local_r["Logo URL"] = p_info["Logo URL"]
+          local_r["Date"] = pd.to_datetime(clean_date)
+          local_r["YearMonth"] = pd.to_datetime(clean_date).to_period("M")
+          new_local_rows.append(local_r)
+
+        if not payloads_to_create:
+          st.sidebar.warning(
+              "⚠️ No new metrics entries to push."
+              + ("\n" + "\n".join(skipped_info) if skipped_info else "")
+          )
+        else:
+          # Push to Airtable in minimal batch API requests
+          try:
+            metrics_table.batch_create(payloads_to_create)
+          except AttributeError:
+            for item in payloads_to_create:
+              metrics_table.create(item)
+
+          # Concatenate locally for immediate UI update
+          new_df = pd.DataFrame(new_local_rows)
+          st.session_state.df_metrics_raw = pd.concat(
+              [st.session_state.df_metrics_raw, new_df], ignore_index=True
+          )
+
+          st.session_state.metrics_uploader_id += 1
+          status_msg = (
+              f"🎉 Successfully ingested {len(payloads_to_create)} weekly"
+              " metric records!"
+          )
+          if skipped_info:
+            status_msg += "\n\nSkipped Notes:\n" + "\n".join(skipped_info[:4])
+          st.session_state.last_metrics_upload_status = status_msg
+          st.rerun()
+
+      except Exception as m_ex:
+        error_details = str(m_ex)
+        if hasattr(m_ex, "response") and m_ex.response is not None:
+          error_details += f" | Response: {m_ex.response.text}"
+        st.sidebar.error(f"Metrics Ingestion break: {error_details}")
+
+
+# --- 7B. SCOPED POST INGESTION ENGINE ---
 if "uploader_id" not in st.session_state:
   st.session_state.uploader_id = 0
 
@@ -903,7 +1178,6 @@ def export_plot_to_b64(
   ax.tick_params(colors="#64748b", labelsize=8)
   ax.grid(axis="y", linestyle="--", alpha=0.5, color="#e2e8f0")
 
-  # Convert index and values to explicit primitive Python lists to bypass Matplotlib transform bugs
   x_vals = [str(i) for i in df_source.index]
   y_vals = (
       pd.to_numeric(df_source[column_name], errors="coerce").fillna(0).tolist()
