@@ -61,7 +61,7 @@ except Exception:
 from weasyprint import HTML
 
 # --- 1. APPLICATION CONFIGURATION & VERSIONING ---
-APP_VERSION = "5.7"
+APP_VERSION = "5.8"
 
 st.set_page_config(
     page_title=f"Executive Analytics Hub v{APP_VERSION}",
@@ -169,7 +169,7 @@ def fetch_raw_airtable_data():
                 "Logo URL": comp_info["Logo URL"],
             }
 
-        # 3. Process Metrics Dataset
+        # 3. Process Metrics Dataset (Preserve NaN values for uncaptured fields)
         metrics_data = []
         for r in raw_metrics:
             fields = r["fields"].copy()
@@ -212,11 +212,9 @@ def fetch_raw_airtable_data():
                 "Post impressions",
             ]:
                 if metric_col in df_m.columns:
-                    df_m[metric_col] = (
-                        pd.to_numeric(df_m[metric_col], errors="coerce").fillna(0)
-                    )
+                    df_m[metric_col] = pd.to_numeric(df_m[metric_col], errors="coerce")
                 else:
-                    df_m[metric_col] = 0
+                    df_m[metric_col] = float("nan")
         else:
             df_m = pd.DataFrame(
                 columns=[
@@ -401,7 +399,7 @@ all_companies_list = st.session_state.all_companies_list
 
 # --- 5. STREAMLINED COMPARTMENTALIZED SIDEBAR CONTROLLER ---
 st.sidebar.title("🏢 Navigation Control Panel")
-st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | HTML Name Fix Active**")
+st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | Point-to-Point Decoupling Active**")
 
 if not all_companies_list:
     st.error(
@@ -895,6 +893,11 @@ def export_plot_to_b64(
     if df_source.empty or column_name not in df_source.columns:
         return ""
 
+    # Clean missing values for this metric to connect valid data points without dropping to zero
+    clean_series = pd.to_numeric(df_source[column_name], errors="coerce").dropna()
+    if clean_series.empty:
+        return ""
+
     fig = Figure(figsize=(5.5, 2.8), facecolor="#ffffff")
     ax = fig.subplots()
     ax.set_facecolor("#ffffff")
@@ -906,11 +909,8 @@ def export_plot_to_b64(
     ax.tick_params(colors="#64748b", labelsize=8)
     ax.grid(axis="y", linestyle="--", alpha=0.5, color="#e2e8f0")
 
-    # Convert index and values to explicit primitive Python lists to bypass Matplotlib transform bugs
-    x_vals = [str(i) for i in df_source.index]
-    y_vals = (
-        pd.to_numeric(df_source[column_name], errors="coerce").fillna(0).tolist()
-    )
+    x_vals = [str(i) for i in clean_series.index]
+    y_vals = clean_series.tolist()
 
     if chart_type == "line":
         ax.plot(
@@ -1182,7 +1182,7 @@ def generate_single_progress_pdf(
             • Cumulative Shift (Inception): <span class='__SSI_INC_CLS__'>__SSI_INC__</span>
         </div>
         <div class='card' style='border-top-color: #64748b;'>
-            <strong>Profile Visibility & Output Metrics (__MONTH__)</strong><br>
+            <strong >Profile Visibility & Output Metrics (__MONTH__)</strong><br>
             • Posts Published: <strong>__POSTS__ Posts</strong><br>
             • Profile Discovery Views: <strong>__VIEWS__</strong><br>
             • Search Appearances Indexes: <strong>__APP__</strong><br>
@@ -1353,11 +1353,19 @@ def generate_single_progress_pdf(
     return buf.getvalue()
 
 
-# --- 10. CROSS-PROFILE LEADERBOARD STANDINGS ENGINE ---
+# --- 10. CROSS-PROFILE LEADERBOARD STANDINGS ENGINE (DECOUPLED METRIC LOOKUPS) ---
 def compute_profile_standings(
     df_metrics_source, df_posts_source, target_profiles, selected_ym_target
 ):
     rows = []
+
+    def get_latest_val(df_sub, col_name):
+        """Helper to return the last valid (non-null) metric value."""
+        if df_sub.empty or col_name not in df_sub.columns:
+            return 0.0
+        valid_series = df_sub[col_name].dropna()
+        return valid_series.iloc[-1] if not valid_series.empty else 0.0
+
     for name in target_profiles:
         pm = (
             df_metrics_source[
@@ -1370,7 +1378,7 @@ def compute_profile_standings(
             else pd.DataFrame()
         )
 
-        if pm.empty or "YearMonth" not in pm.columns:
+        if pm.empty:
             job_title = "Executive"
             followers_curr, followers_mom, followers_inc = 0, 0.0, 0
             ssi_curr, ssi_mom, ssi_inc = 0, 0, 0
@@ -1381,32 +1389,39 @@ def compute_profile_standings(
                 if "Job Title" in pm.columns
                 else "Executive"
             )
-            first = pm.iloc[0]
 
-            current_rows = pm[pm["YearMonth"] == selected_ym_target]
-            current = current_rows.iloc[-1] if not current_rows.empty else pm.iloc[-1]
+            pm_current = pm[pm["YearMonth"] <= selected_ym_target]
+            pm_prev = pm[pm["YearMonth"] <= (selected_ym_target - 1)]
 
-            prev_rows = pm[pm["YearMonth"] == (selected_ym_target - 1)]
-            prev = prev_rows.iloc[-1] if not prev_rows.empty else None
-
-            followers_curr = current["Total followers"]
-            followers_prev = (
-                prev["Total followers"] if prev is not None else followers_curr
+            followers_curr = get_latest_val(pm_current, "Total followers")
+            followers_prev = get_latest_val(pm_prev, "Total followers") or followers_curr
+            followers_first = (
+                pm["Total followers"].dropna().iloc[0]
+                if not pm["Total followers"].dropna().empty
+                else followers_curr
             )
+
             followers_mom = (
                 ((followers_curr - followers_prev) / followers_prev * 100)
                 if followers_prev
                 else 0.0
             )
-            followers_inc = followers_curr - first["Total followers"]
+            followers_inc = followers_curr - followers_first
 
-            ssi_curr = current["SSI"]
-            ssi_prev = prev["SSI"] if prev is not None else ssi_curr
+            ssi_curr = get_latest_val(pm_current, "SSI")
+            ssi_prev = get_latest_val(pm_prev, "SSI") or ssi_curr
+            ssi_first = (
+                pm["SSI"].dropna().iloc[0]
+                if not pm["SSI"].dropna().empty
+                else ssi_curr
+            )
+
             ssi_mom = ssi_curr - ssi_prev
-            ssi_inc = ssi_curr - first["SSI"]
-            views_curr = current["Profile views"]
-            app_curr = current["Appearances"]
-            post_imp_curr = current.get("Post impressions", 0)
+            ssi_inc = ssi_curr - ssi_first
+
+            views_curr = get_latest_val(pm_current, "Profile views")
+            app_curr = get_latest_val(pm_current, "Appearances")
+            post_imp_curr = get_latest_val(pm_current, "Post impressions")
 
         posts_count = 0
         if not df_posts_source.empty and "YearMonth" in df_posts_source.columns:
@@ -1566,18 +1581,18 @@ with tab_team:
         with tc1:
             st.caption("👥 Combined Follower Growth")
             st.line_chart(
-                team_trends_df[["Total followers"]], color=client_brand_color
+                team_trends_df[["Total followers"]].ffill(), color=client_brand_color
             )
             st.caption("🔍 Combined Platform-Wide Visibility")
-            st.line_chart(team_trends_df[["Appearances"]], color="#ff9900")
+            st.line_chart(team_trends_df[["Appearances"]].ffill(), color="#ff9900")
         with tc2:
             st.caption("👀 Combined Profile Views")
-            st.line_chart(team_trends_df[["Profile views"]], color="#1db954")
+            st.line_chart(team_trends_df[["Profile views"]].ffill(), color="#1db954")
             st.caption("📈 Rolling Average Social Selling Index (SSI)")
-            st.line_chart(team_trends_df[["SSI"]], color="#dc2626")
+            st.line_chart(team_trends_df[["SSI"]].ffill(), color="#dc2626")
         with tc3:
             st.caption("📊 Combined Weekly Post Impressions")
-            st.line_chart(team_trends_df[["Post impressions"]], color="#0077b5")
+            st.line_chart(team_trends_df[["Post impressions"]].ffill(), color="#0077b5")
     else:
         st.info("No historical metrics exist to display combined team curves yet.")
 
@@ -1677,17 +1692,17 @@ with tab_individual:
                 len(individual_posts) if not individual_posts.empty else 0
             )
             display_views = (
-                int(profile_metrics["Profile views"].sum())
+                int(profile_metrics["Profile views"].dropna().sum())
                 if not profile_metrics.empty
                 else 0
             )
             display_app = (
-                int(profile_metrics["Appearances"].sum())
+                int(profile_metrics["Appearances"].dropna().sum())
                 if not profile_metrics.empty
                 else 0
             )
             display_post_imp = (
-                int(profile_metrics["Post impressions"].sum())
+                int(profile_metrics["Post impressions"].dropna().sum())
                 if not profile_metrics.empty and "Post impressions" in profile_metrics.columns
                 else 0
             )
@@ -1897,24 +1912,24 @@ with tab_individual:
                 with ic1:
                     st.caption("📈 Total Followers")
                     st.line_chart(
-                        profile_metrics_clean[["Total followers"]],
+                        profile_metrics_clean[["Total followers"]].ffill(),
                         color=client_brand_color,
                     )
                     st.caption("🔍 Platform-Wide Search Appearances")
                     st.line_chart(
-                        profile_metrics_clean[["Appearances"]], color="#ff9900"
+                        profile_metrics_clean[["Appearances"]].ffill(), color="#ff9900"
                     )
                 with ic2:
                     st.caption("🛡️ Social Selling Index (SSI)")
-                    st.line_chart(profile_metrics_clean[["SSI"]], color="#dc2626")
+                    st.line_chart(profile_metrics_clean[["SSI"]].ffill(), color="#dc2626")
                     st.caption("👀 Profile Views")
                     st.line_chart(
-                        profile_metrics_clean[["Profile views"]], color="#1db954"
+                        profile_metrics_clean[["Profile views"]].ffill(), color="#1db954"
                     )
                 with ic3:
                     st.caption("📊 Weekly Post Impressions")
                     st.line_chart(
-                        profile_metrics_clean[["Post impressions"]], color="#0077b5"
+                        profile_metrics_clean[["Post impressions"]].ffill(), color="#0077b5"
                     )
             else:
                 st.info("No weekly metric logs recorded for this executive yet.")
