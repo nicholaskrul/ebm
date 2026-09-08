@@ -10,58 +10,10 @@ import requests
 from requests.adapters import HTTPAdapter
 import streamlit as st
 from urllib3.util import Retry
-
-# --- 0. RUNTIME PATCH FOR WEASYPRINT / PYDYF MATRIX METHOD MISMATCHES ---
-try:
-    import pydyf
-
-    # Patch missing 'transform' method
-    if not hasattr(pydyf.Stream, "transform"):
-        if hasattr(pydyf.Stream, "set_matrix"):
-            pydyf.Stream.transform = (
-                lambda self, a=1, b=0, c=0, d=1, e=0, f=0: self.set_matrix(
-                    a, b, c, d, e, f
-                )
-            )
-        else:
-
-            def _pydyf_transform_patch(self, a=1, b=0, c=0, d=1, e=0, f=0):
-                cmd = f"{a:g} {b:g} {c:g} {d:g} {e:g} {f:g} cm\n".encode("ascii")
-                if hasattr(self, "stream"):
-                    if isinstance(self.stream, list):
-                        self.stream.append(cmd)
-                    elif isinstance(self.stream, bytearray):
-                        self.stream.extend(cmd)
-
-            pydyf.Stream.transform = _pydyf_transform_patch
-
-    # Patch missing 'text_matrix' method
-    if not hasattr(pydyf.Stream, "text_matrix"):
-        if hasattr(pydyf.Stream, "set_text_matrix"):
-            pydyf.Stream.text_matrix = (
-                lambda self, a=1, b=0, c=0, d=1, e=0, f=0: self.set_text_matrix(
-                    a, b, c, d, e, f
-                )
-            )
-        else:
-
-            def _pydyf_text_matrix_patch(self, a=1, b=0, c=0, d=1, e=0, f=0):
-                cmd = f"{a:g} {b:g} {c:g} {d:g} {e:g} {f:g} Tm\n".encode("ascii")
-                if hasattr(self, "stream"):
-                    if isinstance(self.stream, list):
-                        self.stream.append(cmd)
-                    elif isinstance(self.stream, bytearray):
-                        self.stream.extend(cmd)
-
-            pydyf.Stream.text_matrix = _pydyf_text_matrix_patch
-
-except Exception:
-    pass
-
-from weasyprint import HTML
+from xhtml2pdf import pisa
 
 # --- 1. APPLICATION CONFIGURATION & VERSIONING ---
-APP_VERSION = "5.8"
+APP_VERSION = "5.9"
 
 st.set_page_config(
     page_title=f"Executive Analytics Hub v{APP_VERSION}",
@@ -399,7 +351,7 @@ all_companies_list = st.session_state.all_companies_list
 
 # --- 5. STREAMLINED COMPARTMENTALIZED SIDEBAR CONTROLLER ---
 st.sidebar.title("🏢 Navigation Control Panel")
-st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | Point-to-Point Decoupling Active**")
+st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | Pure Python PDF Active**")
 
 if not all_companies_list:
     st.error(
@@ -893,7 +845,6 @@ def export_plot_to_b64(
     if df_source.empty or column_name not in df_source.columns:
         return ""
 
-    # Clean missing values for this metric to connect valid data points without dropping to zero
     clean_series = pd.to_numeric(df_source[column_name], errors="coerce").dropna()
     if clean_series.empty:
         return ""
@@ -951,7 +902,13 @@ def make_img_card_html(b64_str, title_str):
     )
 
 
-# --- 9. CACHED PDF REPORT COMPILERS ---
+# --- 9. CACHED PDF REPORT COMPILERS (PURE PYTHON XHTML2PDF ENGINE) ---
+def render_pdf_bytes(html_content):
+    buf = io.BytesIO()
+    pisa.CreatePDF(src=html_content, dest=buf)
+    return buf.getvalue()
+
+
 def generate_team_progress_pdf(
     df_source,
     trends_df,
@@ -970,11 +927,11 @@ def generate_team_progress_pdf(
 
     html_template = f"""
     <!DOCTYPE html><html><head><meta charset='utf-8'><style>
-        @page {{ size: A4 landscape; margin: 10mm; background-color: #fafbfc; }}
+        @page {{ size: letter landscape; margin: 10mm; background-color: #fafbfc; }}
         body {{ font-family: sans-serif; color: #1e293b; font-size: 8.5pt; line-height: 1.4; }}
         .header {{ background: #0f172a; color: white; padding: 15px 20px; border-radius: 6px; margin-bottom: 12px; border-left: 6px solid {brand_color}; }}
         h1 {{ margin: 0; font-size: 16pt; }} .subtitle {{ margin: 2px 0 0 0; color: #94a3b8; }}
-        table {{ width: 100%; border-collapse: collapse; margin-top: 10px; background: white; page-break-inside: avoid; }}
+        table {{ width: 100%; border-collapse: collapse; margin-top: 10px; background: white; }}
         th {{ background: {brand_color}; color: white; text-align: left; padding: 7px 9px; font-size: 8.5pt; font-weight: 600; border: 1px solid #cbd5e1; }}
         td {{ padding: 7px 9px; border: 1px solid #e2e8f0; vertical-align: top; }}
         tr:nth-child(even) {{ background: #f8fafc; }}
@@ -1109,9 +1066,7 @@ def generate_team_progress_pdf(
         )
     )
 
-    buf = io.BytesIO()
-    HTML(string=final_html).write_pdf(buf)
-    return buf.getvalue()
+    return render_pdf_bytes(final_html)
 
 
 def generate_single_progress_pdf(
@@ -1150,7 +1105,7 @@ def generate_single_progress_pdf(
 
     html_template = f"""
     <!DOCTYPE html><html><head><meta charset='utf-8'><style>
-        @page {{ size: A4; margin: 15mm 15mm; background-color: #f8fafc; }}
+        @page {{ size: letter; margin: 15mm 15mm; background-color: #f8fafc; }}
         body {{ font-family: Arial, sans-serif; color: #1e293b; font-size: 10pt; line-height: 1.5; }}
         .header {{ background: #0f172a; color: white; padding: 20px; border-radius: 6px; margin-bottom: 20px; border-left: 6px solid {brand_color}; }}
         h1 {{ margin: 0; font-size: 18pt; }} .title {{ color: #bfdbfe; margin: 2px 0 0 0; }}
@@ -1158,7 +1113,7 @@ def generate_single_progress_pdf(
         .val {{ font-size: 22pt; font-weight: bold; color: #0f172a; margin-bottom: 5px; }}
         .pos {{ color: #16a34a; font-weight: bold; }} .neg {{ color: #dc2626; font-weight: bold; }}
         .notes-block {{ background-color: #f1f5f9; padding: 15px; border-left: 4px solid {brand_color}; border-radius: 4px; margin-top: 20px; }}
-        .grid-table {{ width: 100%; border-collapse: collapse; background: transparent; page-break-inside: avoid; }}
+        .grid-table {{ width: 100%; border-collapse: collapse; background: transparent; }}
         .grid-table td {{ border: none; padding: 5px; width: 50%; }}
         .chart-card {{ background: white; border: 1px solid #cbd5e1; padding: 6px; border-radius: 4px; text-align: center; }}
         .chart-title {{ font-size: 8pt; font-weight: bold; color: #475569; margin-bottom: 3px; text-align: left; }}
@@ -1182,7 +1137,7 @@ def generate_single_progress_pdf(
             • Cumulative Shift (Inception): <span class='__SSI_INC_CLS__'>__SSI_INC__</span>
         </div>
         <div class='card' style='border-top-color: #64748b;'>
-            <strong >Profile Visibility & Output Metrics (__MONTH__)</strong><br>
+            <strong>Profile Visibility & Output Metrics (__MONTH__)</strong><br>
             • Posts Published: <strong>__POSTS__ Posts</strong><br>
             • Profile Discovery Views: <strong>__VIEWS__</strong><br>
             • Search Appearances Indexes: <strong>__APP__</strong><br>
@@ -1348,9 +1303,7 @@ def generate_single_progress_pdf(
         .replace("__INDIVIDUAL_POSTS_SECTION__", ind_posts_section_html)
     )
 
-    buf = io.BytesIO()
-    HTML(string=final_html).write_pdf(buf)
-    return buf.getvalue()
+    return render_pdf_bytes(final_html)
 
 
 # --- 10. CROSS-PROFILE LEADERBOARD STANDINGS ENGINE (DECOUPLED METRIC LOOKUPS) ---
@@ -1709,7 +1662,6 @@ with tab_individual:
             pdf_horizon_str = "Since Inception"
             pdf_file_suffix = "Since_Inception"
 
-        # Dynamically compute audience quality metrics based on active scope
         avg_dm_reach = (
             target_posts["Decision-Maker Reach %"].mean() * 100
             if not target_posts.empty
@@ -1763,7 +1715,6 @@ with tab_individual:
             else "No industrial tracking profiles mapped."
         )
 
-        # Prepare Scope-Aligned Graphs for PDF Compiler
         b64_reach_pct, b64_members_reached, b64_eng_rate = "", "", ""
         if not target_posts.empty:
             pdf_plot_df = target_posts.copy().sort_values("Publish Date")
