@@ -3,6 +3,7 @@ from datetime import datetime
 import io
 import os
 import pickle
+import tempfile
 from matplotlib.figure import Figure
 import pandas as pd
 from pyairtable import Api
@@ -13,7 +14,7 @@ from urllib3.util import Retry
 from xhtml2pdf import pisa
 
 # --- 1. APPLICATION CONFIGURATION & VERSIONING ---
-APP_VERSION = "6.0"
+APP_VERSION = "6.1"
 
 st.set_page_config(
     page_title=f"Executive Analytics Hub v{APP_VERSION}",
@@ -345,7 +346,7 @@ all_companies_list = st.session_state.all_companies_list
 
 # --- 5. STREAMLINED COMPARTMENTALIZED SIDEBAR CONTROLLER ---
 st.sidebar.title("🏢 Navigation Control Panel")
-st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | Streamlined Executive Suite**")
+st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | PDF Image Rendering Fix**")
 
 if not all_companies_list:
     st.error(
@@ -831,8 +832,8 @@ if st.sidebar.button("🔄 Sync Fresh Airtable Data", use_container_width=True):
     st.rerun()
 
 
-# --- 8. GRAPH ENGINE BASE64 EXPORT UTILITY ---
-def export_plot_to_b64(
+# --- 8. GRAPH ENGINE TEMP FILE UTILITY (COMPATIBLE WITH XHTML2PDF) ---
+def export_plot_to_tempfile(
     df_source, column_name, chart_type="line", color="#0a66c2"
 ):
     if df_source.empty or column_name not in df_source.columns:
@@ -874,19 +875,18 @@ def export_plot_to_b64(
             width=0.6,
         )
 
-    img_buf = io.BytesIO()
-    fig.savefig(img_buf, format="png", bbox_inches="tight", dpi=150)
-    img_buf.seek(0)
-    b64_output = base64.b64encode(img_buf.read()).decode("utf-8")
+    tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+    fig.savefig(tmp_file.name, format="png", bbox_inches="tight", dpi=150)
     fig.clf()
-    return f"data:image/png;base64,{b64_output}"
+    tmp_file.close()
+    return tmp_file.name
 
 
-def make_img_card_html(b64_str, title_str):
-    if b64_str:
+def make_img_card_html(img_path, title_str):
+    if img_path and os.path.exists(img_path):
         return (
             f"<div class='chart-card'><div class='chart-title'>{title_str}</div><img"
-            f" src='{b64_str}' style='width:100%; height:auto;'></div>"
+            f" src='{img_path}' width='260' /></div>"
         )
     return (
         f"<div class='chart-card'><div class='chart-title'>{title_str}</div><p"
@@ -911,149 +911,169 @@ def generate_team_progress_pdf(
     brand_color,
     logo_url,
 ):
-    logo_html = (
-        f"<img src='{logo_url}' style='height: 45px; max-width: 200px; float:"
-        " right; margin-top: -5px;'>"
-        if logo_url
-        else ""
-    )
+    created_temp_files = []
+    try:
+        logo_html = (
+            f"<img src='{logo_url}' style='height: 45px; max-width: 200px; float:"
+            " right; margin-top: -5px;'>"
+            if logo_url
+            else ""
+        )
 
-    html_template = f"""
-    <!DOCTYPE html><html><head><meta charset='utf-8'><style>
-        @page {{ size: letter landscape; margin: 10mm; background-color: #fafbfc; }}
-        body {{ font-family: sans-serif; color: #1e293b; font-size: 8.5pt; line-height: 1.4; }}
-        .header {{ background: #0f172a; color: white; padding: 15px 20px; border-radius: 6px; margin-bottom: 12px; border-left: 6px solid {brand_color}; }}
-        h1 {{ margin: 0; font-size: 16pt; }} .subtitle {{ margin: 2px 0 0 0; color: #94a3b8; }}
-        table {{ width: 100%; border-collapse: collapse; margin-top: 10px; background: white; }}
-        th {{ background: {brand_color}; color: white; text-align: left; padding: 7px 9px; font-size: 8.5pt; font-weight: 600; border: 1px solid #cbd5e1; }}
-        td {{ padding: 7px 9px; border: 1px solid #e2e8f0; vertical-align: top; }}
-        tr:nth-child(even) {{ background: #f8fafc; }}
-        .section-lbl {{ font-size: 7.5pt; text-transform: uppercase; color: #64748b; font-weight: bold; display: block; margin-bottom: 1px; }}
-        .note-box {{ background-color: #f1f5f9; padding: 5px; border-left: 3px solid {brand_color}; font-style: italic; margin-top: 3px; border-radius: 2px; font-size: 8pt; }}
-        .pos {{ color: #16a34a; font-weight: bold; }} .neg {{ color: #dc2626; font-weight: bold; }}
-        .grid-table {{ width: 100%; border-collapse: collapse; margin-top: 15px; background: transparent; }}
-        .grid-table td {{ border: none; padding: 6px; width: 50%; }}
-        .chart-card {{ background: white; border: 1px solid #cbd5e1; padding: 8px; border-radius: 4px; text-align: center; }}
-        .chart-title {{ font-size: 8.5pt; font-weight: bold; color: #334155; margin-bottom: 4px; text-align: left; }}
-        .page-break {{ page-break-before: always; }}
-    </style></head><body>
-        <div class='header'>
-            {logo_html}
-            <h1>{company_name} — Executive Portfolio Progress Report</h1>
-            <p class='subtitle'>Combined Standings Tracker & Performance Horizons Index — __HORIZON__ (v{APP_VERSION})</p>
-        </div>
-        <div style='display: table; width: 100%; margin-bottom: 12px;'>
-            <div style='display: table-cell; background: white; border: 1px solid #cbd5e1; padding: 10px; text-align: center;'><strong>Total Follower Count:</strong> __TOTAL_REACH__</div>
-            <div style='display: table-cell; background: white; border: 1px solid #cbd5e1; padding: 10px; text-align: center; border-left:none;'><strong>Total Pool Content Output:</strong> __TOTAL_POSTS__ Posts</div>
-            <div style='display: table-cell; background: white; border: 1px solid #cbd5e1; padding: 10px; text-align: center; border-left:none;'><strong>Total Post Impressions:</strong> __TOTAL_POST_IMP__</div>
-        </div>
-        <table>
-            <thead>
+        html_template = f"""
+        <!DOCTYPE html><html><head><meta charset='utf-8'><style>
+            @page {{ size: letter landscape; margin: 10mm; background-color: #fafbfc; }}
+            body {{ font-family: sans-serif; color: #1e293b; font-size: 8.5pt; line-height: 1.4; }}
+            .header {{ background: #0f172a; color: white; padding: 15px 20px; border-radius: 6px; margin-bottom: 12px; border-left: 6px solid {brand_color}; }}
+            h1 {{ margin: 0; font-size: 16pt; }} .subtitle {{ margin: 2px 0 0 0; color: #94a3b8; }}
+            table {{ width: 100%; border-collapse: collapse; margin-top: 10px; background: white; }}
+            th {{ background: {brand_color}; color: white; text-align: left; padding: 7px 9px; font-size: 8.5pt; font-weight: 600; border: 1px solid #cbd5e1; }}
+            td {{ padding: 7px 9px; border: 1px solid #e2e8f0; vertical-align: top; }}
+            tr:nth-child(even) {{ background: #f8fafc; }}
+            .section-lbl {{ font-size: 7.5pt; text-transform: uppercase; color: #64748b; font-weight: bold; display: block; margin-bottom: 1px; }}
+            .note-box {{ background-color: #f1f5f9; padding: 5px; border-left: 3px solid {brand_color}; font-style: italic; margin-top: 3px; border-radius: 2px; font-size: 8pt; }}
+            .pos {{ color: #16a34a; font-weight: bold; }} .neg {{ color: #dc2626; font-weight: bold; }}
+            .grid-table {{ width: 100%; border-collapse: collapse; margin-top: 15px; background: transparent; }}
+            .grid-table td {{ border: none; padding: 6px; width: 50%; }}
+            .chart-card {{ background: white; border: 1px solid #cbd5e1; padding: 8px; border-radius: 4px; text-align: center; }}
+            .chart-title {{ font-size: 8.5pt; font-weight: bold; color: #334155; margin-bottom: 4px; text-align: left; }}
+            .page-break {{ page-break-before: always; }}
+        </style></head><body>
+            <div class='header'>
+                {logo_html}
+                <h1>{company_name} — Executive Portfolio Progress Report</h1>
+                <p class='subtitle'>Combined Standings Tracker & Performance Horizons Index — __HORIZON__ (v{APP_VERSION})</p>
+            </div>
+            <div style='display: table; width: 100%; margin-bottom: 12px;'>
+                <div style='display: table-cell; background: white; border: 1px solid #cbd5e1; padding: 10px; text-align: center;'><strong>Total Follower Count:</strong> __TOTAL_REACH__</div>
+                <div style='display: table-cell; background: white; border: 1px solid #cbd5e1; padding: 10px; text-align: center; border-left:none;'><strong>Total Pool Content Output:</strong> __TOTAL_POSTS__ Posts</div>
+                <div style='display: table-cell; background: white; border: 1px solid #cbd5e1; padding: 10px; text-align: center; border-left:none;'><strong>Total Post Impressions:</strong> __TOTAL_POST_IMP__</div>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width: 15%;">Executive Name & Title</th>
+                        <th style="width: 20%;">Follower Growth Progress</th>
+                        <th style="width: 10%;">Posts Published</th>
+                        <th style="width: 25%;">Views, Appearances & Impressions</th>
+                        <th style="width: 30%;">Manager Performance Summary</th>
+                    </tr>
+                </thead>
+                <tbody>__ROWS__</tbody>
+            </table>
+
+            <div class="page-break"></div>
+            <div class='header'>
+                <h1>📊 Combined Team Macro-Trend Vectors (All-Time History)</h1>
+            </div>
+            <table class='grid-table'>
                 <tr>
-                    <th style="width: 15%;">Executive Name & Title</th>
-                    <th style="width: 20%;">Follower Growth Progress</th>
-                    <th style="width: 10%;">Posts Published</th>
-                    <th style="width: 25%;">Views, Appearances & Impressions</th>
-                    <th style="width: 30%;">Manager Performance Summary</th>
+                    <td>__CARD_FOL__</td>
+                    <td>__CARD_VIEWS__</td>
                 </tr>
-            </thead>
-            <tbody>__ROWS__</tbody>
-        </table>
-
-        <div class="page-break"></div>
-        <div class='header'>
-            <h1>📊 Combined Team Macro-Trend Vectors (All-Time History)</h1>
-        </div>
-        <table class='grid-table'>
-            <tr>
-                <td>__CARD_FOL__</td>
-                <td>__CARD_VIEWS__</td>
-            </tr>
-            <tr>
-                <td>__CARD_APP__</td>
-                <td>__CARD_POST_IMP__</td>
-            </tr>
-        </table>
-    </body></html>
-    """
-    rows_html = ""
-    for _, row in df_source.iterrows():
-        p_name = row["Profile Name"]
-        txt_note = manager_notes.get(p_name, "").strip()
-        note_html = (
-            f"<div class='note-box'>{txt_note}</div>"
-            if txt_note
-            else "<em style='color:#94a3b8;'>No performance remarks provided.</em>"
-        )
-        f_mom_cls = "pos" if row["Followers MoM%"] >= 0 else "neg"
-        p_imp_val = int(row.get("Post Impressions", 0))
-
-        rows_html += f"""
-        <tr>
-            <td><strong>{p_name}</strong><br><span style='color:#64748b; font-size:8pt;'>{row['Job Title']}</span></td>
-            <td>
-                <span class='section-lbl'>Total Followers:</span> <strong>{int(row['Followers']):,}</strong><br>
-                <span class='section-lbl'>Monthly:</span> <span class='{f_mom_cls}'>{row['Followers MoM%']:+.1f}% MoM</span><br>
-                <span class='section-lbl'>Overall:</span> <span class='pos'>+{int(row['Followers Inc Growth']):,} since inception</span>
-            </td>
-            <td style='text-align: center;'><strong style='font-size:12pt; color:{brand_color};'>{int(row['Posts Published'])}</strong><br><span style='font-size:7.5pt; color:#64748b;'>Published</span></td>
-            <td>
-                <span class='section-lbl'>Profile Views:</span> <strong>{int(row['Views']):,}</strong><br>
-                <span class='section-lbl'>Profile Appearances:</span> <strong>{int(row['Appearances']):,}</strong><br>
-                <span class='section-lbl'>Post Impressions:</span> <strong>{p_imp_val:,}</strong>
-            </td>
-            <td>{note_html}</td>
-        </tr>
+                <tr>
+                    <td>__CARD_APP__</td>
+                    <td>__CARD_POST_IMP__</td>
+                </tr>
+            </table>
+        </body></html>
         """
+        rows_html = ""
+        for _, row in df_source.iterrows():
+            p_name = row["Profile Name"]
+            txt_note = manager_notes.get(p_name, "").strip()
+            note_html = (
+                f"<div class='note-box'>{txt_note}</div>"
+                if txt_note
+                else "<em style='color:#94a3b8;'>No performance remarks provided.</em>"
+            )
+            f_mom_cls = "pos" if row["Followers MoM%"] >= 0 else "neg"
+            p_imp_val = int(row.get("Post Impressions", 0))
 
-    hist_metrics_clean = (
-        trends_df.groupby(level=0).last()
-        if isinstance(trends_df.index, pd.MultiIndex)
-        else trends_df.groupby(trends_df.index).last()
-    )
+            rows_html += f"""
+            <tr>
+                <td><strong>{p_name}</strong><br><span style='color:#64748b; font-size:8pt;'>{row['Job Title']}</span></td>
+                <td>
+                    <span class='section-lbl'>Total Followers:</span> <strong>{int(row['Followers']):,}</strong><br>
+                    <span class='section-lbl'>Monthly:</span> <span class='{f_mom_cls}'>{row['Followers MoM%']:+.1f}% MoM</span><br>
+                    <span class='section-lbl'>Overall:</span> <span class='pos'>+{int(row['Followers Inc Growth']):,} since inception</span>
+                </td>
+                <td style='text-align: center;'><strong style='font-size:12pt; color:{brand_color};'>{int(row['Posts Published'])}</strong><br><span style='font-size:7.5pt; color:#64748b;'>Published</span></td>
+                <td>
+                    <span class='section-lbl'>Profile Views:</span> <strong>{int(row['Views']):,}</strong><br>
+                    <span class='section-lbl'>Profile Appearances:</span> <strong>{int(row['Appearances']):,}</strong><br>
+                    <span class='section-lbl'>Post Impressions:</span> <strong>{p_imp_val:,}</strong>
+                </td>
+                <td>{note_html}</td>
+            </tr>
+            """
 
-    b64_fol = export_plot_to_b64(
-        hist_metrics_clean, "Total followers", "line", brand_color
-    )
-    b64_views = export_plot_to_b64(
-        hist_metrics_clean, "Profile views", "line", "#1db954"
-    )
-    b64_app = export_plot_to_b64(
-        hist_metrics_clean, "Appearances", "line", "#ff9900"
-    )
-    b64_post_imp = export_plot_to_b64(
-        hist_metrics_clean, "Post impressions", "line", "#0077b5"
-    )
+        hist_metrics_clean = (
+            trends_df.groupby(level=0).last()
+            if isinstance(trends_df.index, pd.MultiIndex)
+            else trends_df.groupby(trends_df.index).last()
+        )
 
-    final_html = (
-        html_template.replace("__ROWS__", rows_html)
-        .replace("__HORIZON__", horizon_str)
-        .replace("__TOTAL_REACH__", f"{df_source['Followers'].sum():,}")
-        .replace("__TOTAL_POSTS__", f"{df_source['Posts Published'].sum()}")
-        .replace(
-            "__TOTAL_POST_IMP__",
-            f"{int(df_source['Post Impressions'].sum() if 'Post Impressions' in df_source.columns else 0):,}",
+        img_fol = export_plot_to_tempfile(
+            hist_metrics_clean, "Total followers", "line", brand_color
         )
-        .replace(
-            "__CARD_FOL__", make_img_card_html(b64_fol, "👥 Combined Follower Growth")
-        )
-        .replace(
-            "__CARD_VIEWS__",
-            make_img_card_html(b64_views, "👀 Combined Profile Views"),
-        )
-        .replace(
-            "__CARD_APP__",
-            make_img_card_html(b64_app, "🔍 Combined Platform-Wide Visibility"),
-        )
-        .replace(
-            "__CARD_POST_IMP__",
-            make_img_card_html(
-                b64_post_imp, "📊 Combined Weekly Post Impressions"
-            ),
-        )
-    )
+        if img_fol:
+            created_temp_files.append(img_fol)
 
-    return render_pdf_bytes(final_html)
+        img_views = export_plot_to_tempfile(
+            hist_metrics_clean, "Profile views", "line", "#1db954"
+        )
+        if img_views:
+            created_temp_files.append(img_views)
+
+        img_app = export_plot_to_tempfile(
+            hist_metrics_clean, "Appearances", "line", "#ff9900"
+        )
+        if img_app:
+            created_temp_files.append(img_app)
+
+        img_post_imp = export_plot_to_tempfile(
+            hist_metrics_clean, "Post impressions", "line", "#0077b5"
+        )
+        if img_post_imp:
+            created_temp_files.append(img_post_imp)
+
+        final_html = (
+            html_template.replace("__ROWS__", rows_html)
+            .replace("__HORIZON__", horizon_str)
+            .replace("__TOTAL_REACH__", f"{df_source['Followers'].sum():,}")
+            .replace("__TOTAL_POSTS__", f"{df_source['Posts Published'].sum()}")
+            .replace(
+                "__TOTAL_POST_IMP__",
+                f"{int(df_source['Post Impressions'].sum() if 'Post Impressions' in df_source.columns else 0):,}",
+            )
+            .replace(
+                "__CARD_FOL__", make_img_card_html(img_fol, "👥 Combined Follower Growth")
+            )
+            .replace(
+                "__CARD_VIEWS__",
+                make_img_card_html(img_views, "👀 Combined Profile Views"),
+            )
+            .replace(
+                "__CARD_APP__",
+                make_img_card_html(img_app, "🔍 Combined Platform-Wide Visibility"),
+            )
+            .replace(
+                "__CARD_POST_IMP__",
+                make_img_card_html(
+                    img_post_imp, "📊 Combined Weekly Post Impressions"
+                ),
+            )
+        )
+
+        return render_pdf_bytes(final_html)
+    finally:
+        for tf in created_temp_files:
+            if os.path.exists(tf):
+                try:
+                    os.remove(tf)
+                except Exception:
+                    pass
 
 
 def generate_single_progress_pdf(
@@ -1074,207 +1094,236 @@ def generate_single_progress_pdf(
     accounts_str,
     industries_str,
     total_high_intent,
-    b64_reach_pct,
-    b64_members_reached,
-    b64_eng_rate,
+    img_reach_pct,
+    img_members_reached,
+    img_eng_rate,
     brand_color,
     logo_url,
 ):
-    logo_html = (
-        f"<img src='{logo_url}' style='height: 45px; max-width: 200px; float:"
-        " right; margin-top: -5px;'>"
-        if logo_url
-        else ""
-    )
-
-    html_template = f"""
-    <!DOCTYPE html><html><head><meta charset='utf-8'><style>
-        @page {{ size: letter; margin: 15mm 15mm; background-color: #f8fafc; }}
-        body {{ font-family: Arial, sans-serif; color: #1e293b; font-size: 10pt; line-height: 1.5; }}
-        .header {{ background: #0f172a; color: white; padding: 20px; border-radius: 6px; margin-bottom: 20px; border-left: 6px solid {brand_color}; }}
-        h1 {{ margin: 0; font-size: 18pt; }} .title {{ color: #bfdbfe; margin: 2px 0 0 0; }}
-        .card {{ background: white; padding: 16px; border: 1px solid #e2e8f0; border-top: 4px solid {brand_color}; margin-bottom: 15px; border-radius: 4px; }}
-        .val {{ font-size: 22pt; font-weight: bold; color: #0f172a; margin-bottom: 5px; }}
-        .pos {{ color: #16a34a; font-weight: bold; }} .neg {{ color: #dc2626; font-weight: bold; }}
-        .notes-block {{ background-color: #f1f5f9; padding: 15px; border-left: 4px solid {brand_color}; border-radius: 4px; margin-top: 20px; }}
-        .grid-table {{ width: 100%; border-collapse: collapse; background: transparent; }}
-        .grid-table td {{ border: none; padding: 5px; width: 50%; }}
-        .chart-card {{ background: white; border: 1px solid #cbd5e1; padding: 6px; border-radius: 4px; text-align: center; }}
-        .chart-title {{ font-size: 8pt; font-weight: bold; color: #475569; margin-bottom: 3px; text-align: left; }}
-        .page-break {{ page-break-before: always; }}
-    </style></head><body>
-        <div class='header'>
-            {logo_html}
-            <h1>__NAME__</h1>
-            <p class='title'>__TITLE__ — Executive Performance Brief (__MONTH__) [v{APP_VERSION}]</p>
-        </div>
-        <div class='card'>
-            <div class='val'>__FOL_CURR__</div>
-            <strong>Total Followers</strong><br>
-            • Monthly Delta: <span class='__FOL_MOM_CLS__'>__FOL_MOM__</span><br>
-            • Cumulative Growth (Since Inception): <span class='pos'>+__FOL_INC__ Followers</span>
-        </div>
-        <div class='card' style='border-top-color: #64748b;'>
-            <strong>Profile Visibility & Output Metrics (__MONTH__)</strong><br>
-            • Posts Published: <strong>__POSTS__ Posts</strong><br>
-            • Profile Discovery Views: <strong>__VIEWS__</strong><br>
-            • Search Appearances Indexes: <strong>__APP__</strong><br>
-            • Weekly Post Impressions: <strong>__POST_IMP__</strong>
-        </div>
-
-        <div class='card' style='border-top-color: #7c3aed;'>
-            <strong>Audience Quality & Account Intelligence Index (__MONTH__)</strong><br>
-            • Average Decision-Maker Reach Tier: <strong>__DM_REACH__%</strong><br>
-            • Key Target Accounts Engaged: <em>__TARGET_ACCOUNTS__</em><br>
-            • Primary Industry Heatmaps: <em>__TARGET_INDUSTRIES__</em><br>
-            • Content High-Intent Signals: <strong>__SAVED_SHARED__ Actions (Saves/Sends/Reposts)</strong>
-        </div>
-
-        <h2>Manager Commentary & Tactical Alignment</h2>
-        <div class='notes-block'>__COMMENTARY__</div>
-
-        <div class="page-break"></div>
-        <div class='header'><h1>📊 Core Strategic Performance Vectors (All-Time History)</h1></div>
-        <table class='grid-table'>
-            <tr>
-                <td>__CARD_IND_FOL__</td>
-                <td>__CARD_IND_VIEWS__</td>
-            </tr>
-            <tr>
-                <td>__CARD_IND_APP__</td>
-                <td>__CARD_IND_POST_IMP__</td>
-            </tr>
-        </table>
-
-        __CONTENT_SECTION__
-        __INDIVIDUAL_POSTS_SECTION__
-    </body></html>
-    """
-    comment_html = (
-        manager_notes_str.replace("\n", "<br>")
-        if manager_notes_str
-        else "<em>No remarks logged.</em>"
-    )
-    hist_metrics_clean = (
-        hist_metrics.groupby("Date").last()
-        if not hist_metrics.empty
-        else pd.DataFrame()
-    )
-
-    b64_ind_fol = export_plot_to_b64(
-        hist_metrics_clean, "Total followers", "line", brand_color
-    )
-    b64_ind_app = export_plot_to_b64(
-        hist_metrics_clean, "Appearances", "line", "#ff9900"
-    )
-    b64_ind_views = export_plot_to_b64(
-        hist_metrics_clean, "Profile views", "line", "#1db954"
-    )
-    b64_ind_post_imp = export_plot_to_b64(
-        hist_metrics_clean, "Post impressions", "line", "#0077b5"
-    )
-
-    content_section_html = ""
-    if not content_df.empty:
-        monthly_posts_perf = (
-            content_df.groupby("YearMonth")
-            .agg({"Impressions": "sum", "Engagement": "sum"})
-            .sort_index()
-        )
-        monthly_posts_perf.index = monthly_posts_perf.index.astype(str)
-        b64_post_imp = export_plot_to_b64(
-            monthly_posts_perf, "Impressions", "bar", brand_color
-        )
-        b64_post_eng = export_plot_to_b64(
-            monthly_posts_perf, "Engagement", "bar", "#1db954"
+    created_temp_files = [img_reach_pct, img_members_reached, img_eng_rate]
+    created_temp_files = [f for f in created_temp_files if f]
+    try:
+        logo_html = (
+            f"<img src='{logo_url}' style='height: 45px; max-width: 200px; float:"
+            " right; margin-top: -5px;'>"
+            if logo_url
+            else ""
         )
 
-        card_p_imp = make_img_card_html(
-            b64_post_imp, "📈 Total Organic Post Impressions"
-        )
-        card_p_eng = make_img_card_html(
-            b64_post_eng, "❤️ Total Post Engagement Interactions"
-        )
+        html_template = f"""
+        <!DOCTYPE html><html><head><meta charset='utf-8'><style>
+            @page {{ size: letter; margin: 15mm 15mm; background-color: #f8fafc; }}
+            body {{ font-family: Arial, sans-serif; color: #1e293b; font-size: 10pt; line-height: 1.5; }}
+            .header {{ background: #0f172a; color: white; padding: 20px; border-radius: 6px; margin-bottom: 20px; border-left: 6px solid {brand_color}; }}
+            h1 {{ margin: 0; font-size: 18pt; }} .title {{ color: #bfdbfe; margin: 2px 0 0 0; }}
+            .card {{ background: white; padding: 16px; border: 1px solid #e2e8f0; border-top: 4px solid {brand_color}; margin-bottom: 15px; border-radius: 4px; }}
+            .val {{ font-size: 22pt; font-weight: bold; color: #0f172a; margin-bottom: 5px; }}
+            .pos {{ color: #16a34a; font-weight: bold; }} .neg {{ color: #dc2626; font-weight: bold; }}
+            .notes-block {{ background-color: #f1f5f9; padding: 15px; border-left: 4px solid {brand_color}; border-radius: 4px; margin-top: 20px; }}
+            .grid-table {{ width: 100%; border-collapse: collapse; background: transparent; }}
+            .grid-table td {{ border: none; padding: 5px; width: 50%; }}
+            .chart-card {{ background: white; border: 1px solid #cbd5e1; padding: 6px; border-radius: 4px; text-align: center; }}
+            .chart-title {{ font-size: 8pt; font-weight: bold; color: #475569; margin-bottom: 3px; text-align: left; }}
+            .page-break {{ page-break-before: always; }}
+        </style></head><body>
+            <div class='header'>
+                {logo_html}
+                <h1>__NAME__</h1>
+                <p class='title'>__TITLE__ — Executive Performance Brief (__MONTH__) [v{APP_VERSION}]</p>
+            </div>
+            <div class='card'>
+                <div class='val'>__FOL_CURR__</div>
+                <strong>Total Followers</strong><br>
+                • Monthly Delta: <span class='__FOL_MOM_CLS__'>__FOL_MOM__</span><br>
+                • Cumulative Growth (Since Inception): <span class='pos'>+__FOL_INC__ Followers</span>
+            </div>
+            <div class='card' style='border-top-color: #64748b;'>
+                <strong>Profile Visibility & Output Metrics (__MONTH__)</strong><br>
+                • Posts Published: <strong>__POSTS__ Posts</strong><br>
+                • Profile Discovery Views: <strong>__VIEWS__</strong><br>
+                • Search Appearances Indexes: <strong>__APP__</strong><br>
+                • Weekly Post Impressions: <strong>__POST_IMP__</strong>
+            </div>
 
-        content_section_html = f"""
-        <div class="page-break"></div>
-        <div class='header'><h1>📝 Content Performance Logs (Historical Vectors)</h1></div>
-        <table class='grid-table'>
-            <tr>
-                <td>{card_p_imp}</td>
-                <td>{card_p_eng}</td>
-            </tr>
-        </table>
+            <div class='card' style='border-top-color: #7c3aed;'>
+                <strong>Audience Quality & Account Intelligence Index (__MONTH__)</strong><br>
+                • Average Decision-Maker Reach Tier: <strong>__DM_REACH__%</strong><br>
+                • Key Target Accounts Engaged: <em>__TARGET_ACCOUNTS__</em><br>
+                • Primary Industry Heatmaps: <em>__TARGET_INDUSTRIES__</em><br>
+                • Content High-Intent Signals: <strong>__SAVED_SHARED__ Actions (Saves/Sends/Reposts)</strong>
+            </div>
+
+            <h2>Manager Commentary & Tactical Alignment</h2>
+            <div class='notes-block'>__COMMENTARY__</div>
+
+            <div class="page-break"></div>
+            <div class='header'><h1>📊 Core Strategic Performance Vectors (All-Time History)</h1></div>
+            <table class='grid-table'>
+                <tr>
+                    <td>__CARD_IND_FOL__</td>
+                    <td>__CARD_IND_VIEWS__</td>
+                </tr>
+                <tr>
+                    <td>__CARD_IND_APP__</td>
+                    <td>__CARD_IND_POST_IMP__</td>
+                </tr>
+            </table>
+
+            __CONTENT_SECTION__
+            __INDIVIDUAL_POSTS_SECTION__
+        </body></html>
         """
-
-    ind_posts_section_html = ""
-    if b64_reach_pct or b64_members_reached or b64_eng_rate:
-        card_reach = make_img_card_html(
-            b64_reach_pct, "🎯 Organic Reach % (Impressions / Total Followers)"
+        comment_html = (
+            manager_notes_str.replace("\n", "<br>")
+            if manager_notes_str
+            else "<em>No remarks logged.</em>"
         )
-        card_members = make_img_card_html(
-            b64_members_reached, "👥 Unique Members Reached"
-        )
-        card_eng_rate = make_img_card_html(
-            b64_eng_rate, "⚡ Engagement Rate % (Total Engagement / Impressions)"
+        hist_metrics_clean = (
+            hist_metrics.groupby("Date").last()
+            if not hist_metrics.empty
+            else pd.DataFrame()
         )
 
-        ind_posts_section_html = f"""
-        <div class="page-break"></div>
-        <div class='header'><h1>📊 Single-Post Performance Breakdown ({horizon_str})</h1></div>
-        <table class='grid-table'>
-            <tr>
-                <td>{card_reach}</td>
-                <td>{card_members}</td>
-            </tr>
-        </table>
-        <table class='grid-table' style='margin-top: 15px;'>
-            <tr>
-                <td style='width: 100%;'>{card_eng_rate}</td>
-            </tr>
-        </table>
-        """
+        img_ind_fol = export_plot_to_tempfile(
+            hist_metrics_clean, "Total followers", "line", brand_color
+        )
+        if img_ind_fol:
+            created_temp_files.append(img_ind_fol)
 
-    final_html = (
-        html_template.replace("__NAME__", selected_profile)
-        .replace("__TITLE__", job_title_str)
-        .replace("__MONTH__", horizon_str)
-        .replace("__FOL_CURR__", f"{int(f_curr):,}")
-        .replace("__FOL_MOM__", f"{f_mom:+.1f}% MoM")
-        .replace("__FOL_MOM_CLS__", "pos" if f_mom >= 0 else "neg")
-        .replace("__FOL_INC__", f"{int(f_inc):,}")
-        .replace("__POSTS__", f"{int(posts_count)}")
-        .replace("__VIEWS__", f"{int(views_count):,}")
-        .replace("__APP__", f"{int(app_count):,}")
-        .replace("__POST_IMP__", f"{int(post_imp_count):,}")
-        .replace("__DM_REACH__", f"{avg_dm_reach:.1f}")
-        .replace("__TARGET_ACCOUNTS__", accounts_str)
-        .replace("__TARGET_INDUSTRIES__", industries_str)
-        .replace("__SAVED_SHARED__", f"{int(total_high_intent)}")
-        .replace("__COMMENTARY__", comment_html)
-        .replace(
-            "__CARD_IND_FOL__",
-            make_img_card_html(b64_ind_fol, "📈 Total Followers"),
+        img_ind_app = export_plot_to_tempfile(
+            hist_metrics_clean, "Appearances", "line", "#ff9900"
         )
-        .replace(
-            "__CARD_IND_APP__",
-            make_img_card_html(
-                b64_ind_app, "🔍 Platform-Wide Profile Appearances"
-            ),
-        )
-        .replace(
-            "__CARD_IND_VIEWS__",
-            make_img_card_html(b64_ind_views, "👀 Profile Views"),
-        )
-        .replace(
-            "__CARD_IND_POST_IMP__",
-            make_img_card_html(b64_ind_post_imp, "📊 Weekly Post Impressions"),
-        )
-        .replace("__CONTENT_SECTION__", content_section_html)
-        .replace("__INDIVIDUAL_POSTS_SECTION__", ind_posts_section_html)
-    )
+        if img_ind_app:
+            created_temp_files.append(img_ind_app)
 
-    return render_pdf_bytes(final_html)
+        img_ind_views = export_plot_to_tempfile(
+            hist_metrics_clean, "Profile views", "line", "#1db954"
+        )
+        if img_ind_views:
+            created_temp_files.append(img_ind_views)
+
+        img_ind_post_imp = export_plot_to_tempfile(
+            hist_metrics_clean, "Post impressions", "line", "#0077b5"
+        )
+        if img_ind_post_imp:
+            created_temp_files.append(img_ind_post_imp)
+
+        content_section_html = ""
+        if not content_df.empty:
+            monthly_posts_perf = (
+                content_df.groupby("YearMonth")
+                .agg({"Impressions": "sum", "Engagement": "sum"})
+                .sort_index()
+            )
+            monthly_posts_perf.index = monthly_posts_perf.index.astype(str)
+
+            img_post_imp = export_plot_to_tempfile(
+                monthly_posts_perf, "Impressions", "bar", brand_color
+            )
+            if img_post_imp:
+                created_temp_files.append(img_post_imp)
+
+            img_post_eng = export_plot_to_tempfile(
+                monthly_posts_perf, "Engagement", "bar", "#1db954"
+            )
+            if img_post_eng:
+                created_temp_files.append(img_post_eng)
+
+            card_p_imp = make_img_card_html(
+                img_post_imp, "📈 Total Organic Post Impressions"
+            )
+            card_p_eng = make_img_card_html(
+                img_post_eng, "❤️ Total Post Engagement Interactions"
+            )
+
+            content_section_html = f"""
+            <div class="page-break"></div>
+            <div class='header'><h1>📝 Content Performance Logs (Historical Vectors)</h1></div>
+            <table class='grid-table'>
+                <tr>
+                    <td>{card_p_imp}</td>
+                    <td>{card_p_eng}</td>
+                </tr>
+            </table>
+            """
+
+        ind_posts_section_html = ""
+        if img_reach_pct or img_members_reached or img_eng_rate:
+            card_reach = make_img_card_html(
+                img_reach_pct, "🎯 Organic Reach % (Impressions / Total Followers)"
+            )
+            card_members = make_img_card_html(
+                img_members_reached, "👥 Unique Members Reached"
+            )
+            card_eng_rate = make_img_card_html(
+                img_eng_rate, "⚡ Engagement Rate % (Total Engagement / Impressions)"
+            )
+
+            ind_posts_section_html = f"""
+            <div class="page-break"></div>
+            <div class='header'><h1>📊 Single-Post Performance Breakdown ({horizon_str})</h1></div>
+            <table class='grid-table'>
+                <tr>
+                    <td>{card_reach}</td>
+                    <td>{card_members}</td>
+                </tr>
+            </table>
+            <table class='grid-table' style='margin-top: 15px;'>
+                <tr>
+                    <td style='width: 100%;'>{card_eng_rate}</td>
+                </tr>
+            </table>
+            """
+
+        final_html = (
+            html_template.replace("__NAME__", selected_profile)
+            .replace("__TITLE__", job_title_str)
+            .replace("__MONTH__", horizon_str)
+            .replace("__FOL_CURR__", f"{int(f_curr):,}")
+            .replace("__FOL_MOM__", f"{f_mom:+.1f}% MoM")
+            .replace("__FOL_MOM_CLS__", "pos" if f_mom >= 0 else "neg")
+            .replace("__FOL_INC__", f"{int(f_inc):,}")
+            .replace("__POSTS__", f"{int(posts_count)}")
+            .replace("__VIEWS__", f"{int(views_count):,}")
+            .replace("__APP__", f"{int(app_count):,}")
+            .replace("__POST_IMP__", f"{int(post_imp_count):,}")
+            .replace("__DM_REACH__", f"{avg_dm_reach:.1f}")
+            .replace("__TARGET_ACCOUNTS__", accounts_str)
+            .replace("__TARGET_INDUSTRIES__", industries_str)
+            .replace("__SAVED_SHARED__", f"{int(total_high_intent)}")
+            .replace("__COMMENTARY__", comment_html)
+            .replace(
+                "__CARD_IND_FOL__",
+                make_img_card_html(img_ind_fol, "📈 Total Followers"),
+            )
+            .replace(
+                "__CARD_IND_APP__",
+                make_img_card_html(
+                    img_ind_app, "🔍 Platform-Wide Profile Appearances"
+                ),
+            )
+            .replace(
+                "__CARD_IND_VIEWS__",
+                make_img_card_html(img_ind_views, "👀 Profile Views"),
+            )
+            .replace(
+                "__CARD_IND_POST_IMP__",
+                make_img_card_html(
+                    img_ind_post_imp, "📊 Weekly Post Impressions"
+                ),
+            )
+            .replace("__CONTENT_SECTION__", content_section_html)
+            .replace("__INDIVIDUAL_POSTS_SECTION__", ind_posts_section_html)
+        )
+
+        return render_pdf_bytes(final_html)
+    finally:
+        for tf in created_temp_files:
+            if os.path.exists(tf):
+                try:
+                    os.remove(tf)
+                except Exception:
+                    pass
 
 
 # --- 10. CROSS-PROFILE LEADERBOARD STANDINGS ENGINE ---
@@ -1656,7 +1705,7 @@ with tab_individual:
             else "No industrial tracking profiles mapped."
         )
 
-        b64_reach_pct, b64_members_reached, b64_eng_rate = "", "", ""
+        img_reach_pct, img_members_reached, img_eng_rate = "", "", ""
         if not target_posts.empty:
             pdf_plot_df = target_posts.copy().sort_values("Publish Date")
             date_lbl_fmt = "%m-%d" if exec_scope == "Selected Month" else "%Y-%m-%d"
@@ -1680,13 +1729,13 @@ with tab_individual:
             )
             pdf_plot_df["Reach (%)"] = (pdf_plot_df["Impressions"] / denom_f) * 100
 
-            b64_reach_pct = export_plot_to_b64(
+            img_reach_pct = export_plot_to_tempfile(
                 pdf_plot_df, "Reach (%)", "bar", client_brand_color
             )
-            b64_members_reached = export_plot_to_b64(
+            img_members_reached = export_plot_to_tempfile(
                 pdf_plot_df, "Members Reached", "bar", "#ff9900"
             )
-            b64_eng_rate = export_plot_to_b64(
+            img_eng_rate = export_plot_to_tempfile(
                 pdf_plot_df, "Engagement Rate (%)", "bar", "#1db954"
             )
 
@@ -1727,9 +1776,9 @@ with tab_individual:
                         accounts_summary_str,
                         industries_summary_str,
                         total_high_intent,
-                        b64_reach_pct,
-                        b64_members_reached,
-                        b64_eng_rate,
+                        img_reach_pct,
+                        img_members_reached,
+                        img_eng_rate,
                         client_brand_color,
                         client_logo_url,
                     )
