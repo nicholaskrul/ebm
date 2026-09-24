@@ -14,7 +14,7 @@ from urllib3.util import Retry
 from xhtml2pdf import pisa
 
 # --- 1. APPLICATION CONFIGURATION & VERSIONING ---
-APP_VERSION = "6.1"
+APP_VERSION = "6.2"
 
 st.set_page_config(
     page_title=f"Executive Analytics Hub v{APP_VERSION}",
@@ -346,7 +346,7 @@ all_companies_list = st.session_state.all_companies_list
 
 # --- 5. STREAMLINED COMPARTMENTALIZED SIDEBAR CONTROLLER ---
 st.sidebar.title("🏢 Navigation Control Panel")
-st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | PDF Image Rendering Fix**")
+st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | xhtml2pdf Resource Loader Active**")
 
 if not all_companies_list:
     st.error(
@@ -879,14 +879,14 @@ def export_plot_to_tempfile(
     fig.savefig(tmp_file.name, format="png", bbox_inches="tight", dpi=150)
     fig.clf()
     tmp_file.close()
-    return tmp_file.name
+    return os.path.abspath(tmp_file.name)
 
 
 def make_img_card_html(img_path, title_str):
     if img_path and os.path.exists(img_path):
         return (
             f"<div class='chart-card'><div class='chart-title'>{title_str}</div><img"
-            f" src='{img_path}' width='260' /></div>"
+            f" src='{img_path}' width='280' /></div>"
         )
     return (
         f"<div class='chart-card'><div class='chart-title'>{title_str}</div><p"
@@ -896,9 +896,25 @@ def make_img_card_html(img_path, title_str):
 
 
 # --- 9. CACHED PDF REPORT COMPILERS (PURE PYTHON XHTML2PDF ENGINE) ---
+def pdf_link_callback(uri, rel):
+    """
+    Custom resource resolver for xhtml2pdf to guarantee local absolute image file access.
+    """
+    if uri.startswith("data:"):
+        return uri
+    if uri.startswith("file://"):
+        uri = uri.replace("file://", "")
+    if os.path.isabs(uri) and os.path.exists(uri):
+        return uri
+    abs_path = os.path.abspath(uri)
+    if os.path.exists(abs_path):
+        return abs_path
+    return uri
+
+
 def render_pdf_bytes(html_content):
     buf = io.BytesIO()
-    pisa.CreatePDF(src=html_content, dest=buf)
+    pisa.CreatePDF(src=html_content, dest=buf, link_callback=pdf_link_callback)
     return buf.getvalue()
 
 
