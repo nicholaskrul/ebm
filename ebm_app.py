@@ -13,7 +13,7 @@ from urllib3.util import Retry
 from xhtml2pdf import pisa
 
 # --- 1. APPLICATION CONFIGURATION & VERSIONING ---
-APP_VERSION = "5.9"
+APP_VERSION = "6.0"
 
 st.set_page_config(
     page_title=f"Executive Analytics Hub v{APP_VERSION}",
@@ -152,13 +152,8 @@ def fetch_raw_airtable_data():
             df_m["Date"] = pd.to_datetime(df_m["Date"])
             df_m["YearMonth"] = df_m["Date"].dt.to_period("M")
 
-            ssi_cols = [col for col in df_m.columns if col.startswith("SSI")]
-            ssi_col = ssi_cols[0] if ssi_cols else "SSI"
-            df_m = df_m.rename(columns={ssi_col: "SSI"})
-
             for metric_col in [
                 "Total followers",
-                "SSI",
                 "Profile views",
                 "Appearances",
                 "Post impressions",
@@ -178,7 +173,6 @@ def fetch_raw_airtable_data():
                     "Date",
                     "YearMonth",
                     "Total followers",
-                    "SSI",
                     "Profile views",
                     "Appearances",
                     "Post impressions",
@@ -351,7 +345,7 @@ all_companies_list = st.session_state.all_companies_list
 
 # --- 5. STREAMLINED COMPARTMENTALIZED SIDEBAR CONTROLLER ---
 st.sidebar.title("🏢 Navigation Control Panel")
-st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | Pure Python PDF Active**")
+st.sidebar.caption(f"🚀 **Build v{APP_VERSION} | Streamlined Executive Suite**")
 
 if not all_companies_list:
     st.error(
@@ -386,7 +380,6 @@ df_metrics = (
             "Date",
             "YearMonth",
             "Total followers",
-            "SSI",
             "Profile views",
             "Appearances",
             "Post impressions",
@@ -951,18 +944,17 @@ def generate_team_progress_pdf(
         </div>
         <div style='display: table; width: 100%; margin-bottom: 12px;'>
             <div style='display: table-cell; background: white; border: 1px solid #cbd5e1; padding: 10px; text-align: center;'><strong>Total Follower Count:</strong> __TOTAL_REACH__</div>
-            <div style='display: table-cell; background: white; border: 1px solid #cbd5e1; padding: 10px; text-align: center; border-left:none;'><strong>Average SSI Score:</strong> __AVG_SSI__</div>
             <div style='display: table-cell; background: white; border: 1px solid #cbd5e1; padding: 10px; text-align: center; border-left:none;'><strong>Total Pool Content Output:</strong> __TOTAL_POSTS__ Posts</div>
+            <div style='display: table-cell; background: white; border: 1px solid #cbd5e1; padding: 10px; text-align: center; border-left:none;'><strong>Total Post Impressions:</strong> __TOTAL_POST_IMP__</div>
         </div>
         <table>
             <thead>
                 <tr>
-                    <th style="width: 13%;">Executive Name & Title</th>
-                    <th style="width: 17%;">Follower Growth Progress</th>
-                    <th style="width: 17%;">SSI Index Progress</th>
-                    <th style="width: 9%;">Posts Published</th>
-                    <th style="width: 19%;">Views, Appearances & Impressions</th>
-                    <th style="width: 25%;">Manager Performance Summary</th>
+                    <th style="width: 15%;">Executive Name & Title</th>
+                    <th style="width: 20%;">Follower Growth Progress</th>
+                    <th style="width: 10%;">Posts Published</th>
+                    <th style="width: 25%;">Views, Appearances & Impressions</th>
+                    <th style="width: 30%;">Manager Performance Summary</th>
                 </tr>
             </thead>
             <tbody>__ROWS__</tbody>
@@ -979,7 +971,7 @@ def generate_team_progress_pdf(
             </tr>
             <tr>
                 <td>__CARD_APP__</td>
-                <td>__CARD_SSI__</td>
+                <td>__CARD_POST_IMP__</td>
             </tr>
         </table>
     </body></html>
@@ -994,8 +986,6 @@ def generate_team_progress_pdf(
             else "<em style='color:#94a3b8;'>No performance remarks provided.</em>"
         )
         f_mom_cls = "pos" if row["Followers MoM%"] >= 0 else "neg"
-        s_mom_cls = "pos" if row["SSI MoM Shift"] >= 0 else "neg"
-        s_inc_cls = "pos" if row["SSI Inc Shift"] >= 0 else "neg"
         p_imp_val = int(row.get("Post Impressions", 0))
 
         rows_html += f"""
@@ -1005,11 +995,6 @@ def generate_team_progress_pdf(
                 <span class='section-lbl'>Total Followers:</span> <strong>{int(row['Followers']):,}</strong><br>
                 <span class='section-lbl'>Monthly:</span> <span class='{f_mom_cls}'>{row['Followers MoM%']:+.1f}% MoM</span><br>
                 <span class='section-lbl'>Overall:</span> <span class='pos'>+{int(row['Followers Inc Growth']):,} since inception</span>
-            </td>
-            <td>
-                <span class='section-lbl'>Current Standing:</span> <strong>{int(row['SSI'])}/100</strong><br>
-                <span class='section-lbl'>Monthly:</span> <span class='{s_mom_cls}'>{row['SSI MoM Shift']:+g} pts MoM</span><br>
-                <span class='section-lbl'>Overall:</span> <span class='{s_inc_cls}'>{row['SSI Inc Shift']:+g} pts since inception</span>
             </td>
             <td style='text-align: center;'><strong style='font-size:12pt; color:{brand_color};'>{int(row['Posts Published'])}</strong><br><span style='font-size:7.5pt; color:#64748b;'>Published</span></td>
             <td>
@@ -1036,7 +1021,9 @@ def generate_team_progress_pdf(
     b64_app = export_plot_to_b64(
         hist_metrics_clean, "Appearances", "line", "#ff9900"
     )
-    b64_ssi = export_plot_to_b64(hist_metrics_clean, "SSI", "line", "#dc2626")
+    b64_post_imp = export_plot_to_b64(
+        hist_metrics_clean, "Post impressions", "line", "#0077b5"
+    )
 
     final_html = (
         html_template.replace("__ROWS__", rows_html)
@@ -1044,8 +1031,8 @@ def generate_team_progress_pdf(
         .replace("__TOTAL_REACH__", f"{df_source['Followers'].sum():,}")
         .replace("__TOTAL_POSTS__", f"{df_source['Posts Published'].sum()}")
         .replace(
-            "__AVG_SSI__",
-            f"{int(df_source['SSI'].mean()) if not df_source.empty else 0}/100",
+            "__TOTAL_POST_IMP__",
+            f"{int(df_source['Post Impressions'].sum() if 'Post Impressions' in df_source.columns else 0):,}",
         )
         .replace(
             "__CARD_FOL__", make_img_card_html(b64_fol, "👥 Combined Follower Growth")
@@ -1059,9 +1046,9 @@ def generate_team_progress_pdf(
             make_img_card_html(b64_app, "🔍 Combined Platform-Wide Visibility"),
         )
         .replace(
-            "__CARD_SSI__",
+            "__CARD_POST_IMP__",
             make_img_card_html(
-                b64_ssi, "📈 Rolling Average Social Selling Index (SSI)"
+                b64_post_imp, "📊 Combined Weekly Post Impressions"
             ),
         )
     )
@@ -1079,9 +1066,6 @@ def generate_single_progress_pdf(
     f_curr,
     f_mom,
     f_inc,
-    s_curr,
-    s_mom,
-    s_inc,
     posts_count,
     views_count,
     app_count,
@@ -1130,12 +1114,6 @@ def generate_single_progress_pdf(
             • Monthly Delta: <span class='__FOL_MOM_CLS__'>__FOL_MOM__</span><br>
             • Cumulative Growth (Since Inception): <span class='pos'>+__FOL_INC__ Followers</span>
         </div>
-        <div class='card' style='border-top-color: #0d9488;'>
-            <div class='val'>__SSI_CURR__ / 100</div>
-            <strong>Social Selling Index (SSI Score)</strong><br>
-            • Monthly Delta: <span class='__SSI_MOM_CLS__'>__SSI_MOM__</span><br>
-            • Cumulative Shift (Inception): <span class='__SSI_INC_CLS__'>__SSI_INC__</span>
-        </div>
         <div class='card' style='border-top-color: #64748b;'>
             <strong>Profile Visibility & Output Metrics (__MONTH__)</strong><br>
             • Posts Published: <strong>__POSTS__ Posts</strong><br>
@@ -1160,11 +1138,11 @@ def generate_single_progress_pdf(
         <table class='grid-table'>
             <tr>
                 <td>__CARD_IND_FOL__</td>
-                <td>__CARD_IND_SSI__</td>
+                <td>__CARD_IND_VIEWS__</td>
             </tr>
             <tr>
                 <td>__CARD_IND_APP__</td>
-                <td>__CARD_IND_VIEWS__</td>
+                <td>__CARD_IND_POST_IMP__</td>
             </tr>
         </table>
 
@@ -1186,14 +1164,14 @@ def generate_single_progress_pdf(
     b64_ind_fol = export_plot_to_b64(
         hist_metrics_clean, "Total followers", "line", brand_color
     )
-    b64_ind_ssi = export_plot_to_b64(
-        hist_metrics_clean, "SSI", "line", "#dc2626"
-    )
     b64_ind_app = export_plot_to_b64(
         hist_metrics_clean, "Appearances", "line", "#ff9900"
     )
     b64_ind_views = export_plot_to_b64(
         hist_metrics_clean, "Profile views", "line", "#1db954"
+    )
+    b64_ind_post_imp = export_plot_to_b64(
+        hist_metrics_clean, "Post impressions", "line", "#0077b5"
     )
 
     content_section_html = ""
@@ -1265,11 +1243,6 @@ def generate_single_progress_pdf(
         .replace("__FOL_MOM__", f"{f_mom:+.1f}% MoM")
         .replace("__FOL_MOM_CLS__", "pos" if f_mom >= 0 else "neg")
         .replace("__FOL_INC__", f"{int(f_inc):,}")
-        .replace("__SSI_CURR__", f"{int(s_curr)}")
-        .replace("__SSI_MOM__", f"{s_mom:+g} pts MoM")
-        .replace("__SSI_MOM_CLS__", "pos" if s_mom >= 0 else "neg")
-        .replace("__SSI_INC__", f"{s_inc:+g} pts Since inception")
-        .replace("__SSI_INC_CLS__", "pos" if s_inc >= 0 else "neg")
         .replace("__POSTS__", f"{int(posts_count)}")
         .replace("__VIEWS__", f"{int(views_count):,}")
         .replace("__APP__", f"{int(app_count):,}")
@@ -1284,12 +1257,6 @@ def generate_single_progress_pdf(
             make_img_card_html(b64_ind_fol, "📈 Total Followers"),
         )
         .replace(
-            "__CARD_IND_SSI__",
-            make_img_card_html(
-                b64_ind_ssi, "🛡️ Social Selling Index (SSI) Tracker"
-            ),
-        )
-        .replace(
             "__CARD_IND_APP__",
             make_img_card_html(
                 b64_ind_app, "🔍 Platform-Wide Profile Appearances"
@@ -1299,6 +1266,10 @@ def generate_single_progress_pdf(
             "__CARD_IND_VIEWS__",
             make_img_card_html(b64_ind_views, "👀 Profile Views"),
         )
+        .replace(
+            "__CARD_IND_POST_IMP__",
+            make_img_card_html(b64_ind_post_imp, "📊 Weekly Post Impressions"),
+        )
         .replace("__CONTENT_SECTION__", content_section_html)
         .replace("__INDIVIDUAL_POSTS_SECTION__", ind_posts_section_html)
     )
@@ -1306,7 +1277,7 @@ def generate_single_progress_pdf(
     return render_pdf_bytes(final_html)
 
 
-# --- 10. CROSS-PROFILE LEADERBOARD STANDINGS ENGINE (DECOUPLED METRIC LOOKUPS) ---
+# --- 10. CROSS-PROFILE LEADERBOARD STANDINGS ENGINE ---
 def compute_profile_standings(
     df_metrics_source, df_posts_source, target_profiles, selected_ym_target
 ):
@@ -1334,7 +1305,6 @@ def compute_profile_standings(
         if pm.empty:
             job_title = "Executive"
             followers_curr, followers_mom, followers_inc = 0, 0.0, 0
-            ssi_curr, ssi_mom, ssi_inc = 0, 0, 0
             views_curr, app_curr, post_imp_curr = 0, 0, 0
         else:
             job_title = (
@@ -1361,17 +1331,6 @@ def compute_profile_standings(
             )
             followers_inc = followers_curr - followers_first
 
-            ssi_curr = get_latest_val(pm_current, "SSI")
-            ssi_prev = get_latest_val(pm_prev, "SSI") or ssi_curr
-            ssi_first = (
-                pm["SSI"].dropna().iloc[0]
-                if not pm["SSI"].dropna().empty
-                else ssi_curr
-            )
-
-            ssi_mom = ssi_curr - ssi_prev
-            ssi_inc = ssi_curr - ssi_first
-
             views_curr = get_latest_val(pm_current, "Profile views")
             app_curr = get_latest_val(pm_current, "Appearances")
             post_imp_curr = get_latest_val(pm_current, "Post impressions")
@@ -1391,9 +1350,6 @@ def compute_profile_standings(
             "Followers": followers_curr,
             "Followers MoM%": followers_mom,
             "Followers Inc Growth": followers_inc,
-            "SSI": ssi_curr,
-            "SSI MoM Shift": ssi_mom,
-            "SSI Inc Shift": ssi_inc,
             "Posts Published": posts_count,
             "Views": views_curr,
             "Appearances": app_curr,
@@ -1407,9 +1363,6 @@ def compute_profile_standings(
             "Followers",
             "Followers MoM%",
             "Followers Inc Growth",
-            "SSI",
-            "SSI MoM Shift",
-            "SSI Inc Shift",
             "Posts Published",
             "Views",
             "Appearances",
@@ -1459,13 +1412,12 @@ with tab_team:
             "Total followers": "sum",
             "Profile views": "sum",
             "Appearances": "sum",
-            "SSI": "mean",
             "Post impressions": "sum",
         })
         .sort_index()
         if not df_metrics.empty
         else pd.DataFrame(
-            columns=["Total followers", "Profile views", "Appearances", "SSI", "Post impressions"]
+            columns=["Total followers", "Profile views", "Appearances", "Post impressions"]
         )
     )
 
@@ -1501,10 +1453,6 @@ with tab_team:
     total_followers = (
         df_team_standings["Followers"].sum() if not df_team_standings.empty else 0
     )
-    mean_ssi = (
-        df_team_standings["SSI"].mean() if not df_team_standings.empty else 0
-    )
-    safe_ssi = int(mean_ssi) if pd.notna(mean_ssi) else 0
     total_posts = (
         df_team_standings["Posts Published"].sum()
         if not df_team_standings.empty
@@ -1519,18 +1467,17 @@ with tab_team:
         else 0
     )
 
-    t_col1, t_col2, t_col3, t_col4, t_col5 = st.columns(5)
-    t_col1.metric("Total Follower Count", f"{total_followers:,} ")
-    t_col2.metric("Average SSI Score", f"{safe_ssi}/100")
-    t_col3.metric("Total Content Output", f"{total_posts} Posts")
-    t_col4.metric("Combined Active Views", f"{total_views:,}")
-    t_col5.metric("Combined Post Impressions", f"{total_post_impressions:,}")
+    t_col1, t_col2, t_col3, t_col4 = st.columns(4)
+    t_col1.metric("Total Follower Count", f"{total_followers:,}")
+    t_col2.metric("Total Content Output", f"{total_posts} Posts")
+    t_col3.metric("Combined Active Views", f"{total_views:,}")
+    t_col4.metric("Combined Post Impressions", f"{total_post_impressions:,}")
 
     st.markdown("---")
     st.subheader("📊 Combined Team Macro-Trend Vectors (All-Time History)")
 
     if not team_trends_df.empty:
-        tc1, tc2, tc3 = st.columns(3)
+        tc1, tc2 = st.columns(2)
         with tc1:
             st.caption("👥 Combined Follower Growth")
             st.line_chart(
@@ -1541,9 +1488,6 @@ with tab_team:
         with tc2:
             st.caption("👀 Combined Profile Views")
             st.line_chart(team_trends_df[["Profile views"]].ffill(), color="#1db954")
-            st.caption("📈 Rolling Average Social Selling Index (SSI)")
-            st.line_chart(team_trends_df[["SSI"]].ffill(), color="#dc2626")
-        with tc3:
             st.caption("📊 Combined Weekly Post Impressions")
             st.line_chart(team_trends_df[["Post impressions"]].ffill(), color="#0077b5")
     else:
@@ -1563,9 +1507,6 @@ with tab_team:
                 "Followers",
                 "Followers MoM%",
                 "Followers Inc Growth",
-                "SSI",
-                "SSI MoM Shift",
-                "SSI Inc Shift",
                 "Posts Published",
                 "Views",
                 "Appearances",
@@ -1778,9 +1719,6 @@ with tab_individual:
                         prof_row["Followers"],
                         prof_row["Followers MoM%"],
                         prof_row["Followers Inc Growth"],
-                        prof_row["SSI"],
-                        prof_row["SSI MoM Shift"],
-                        prof_row["SSI Inc Shift"],
                         display_posts_cnt,
                         display_views,
                         display_app,
@@ -1814,21 +1752,16 @@ with tab_individual:
                 )
 
         with ind_col_left:
-            col1, col2, col3, col4, col5, col6 = st.columns(6)
+            col1, col2, col3, col4, col5 = st.columns(5)
             col1.metric(
                 "Followers",
                 f"{int(prof_row['Followers']):,}",
                 f"{prof_row['Followers MoM%']:+.1f}% MoM",
             )
-            col2.metric(
-                "SSI Score",
-                f"{int(prof_row['SSI'])}/100",
-                f"{prof_row['SSI MoM Shift']:+g} pts MoM",
-            )
-            col3.metric(posts_metric_label, f"{display_posts_cnt:,}")
-            col4.metric("Profile Views", f"{display_views:,}")
-            col5.metric("Appearances", f"{display_app:,}")
-            col6.metric("Post Impressions", f"{display_post_imp:,}")
+            col2.metric(posts_metric_label, f"{display_posts_cnt:,}")
+            col3.metric("Profile Views", f"{display_views:,}")
+            col4.metric("Appearances", f"{display_app:,}")
+            col5.metric("Post Impressions", f"{display_post_imp:,}")
 
             st.markdown(f"### 🎯 Audience Quality Index ({exec_scope})")
             aq_col1, aq_col2, aq_col3 = st.columns(3)
@@ -1859,7 +1792,7 @@ with tab_individual:
             if not profile_metrics.empty:
                 profile_metrics_clean = profile_metrics.groupby("Date").last()
 
-                ic1, ic2, ic3 = st.columns(3)
+                ic1, ic2 = st.columns(2)
                 with ic1:
                     st.caption("📈 Total Followers")
                     st.line_chart(
@@ -1871,13 +1804,10 @@ with tab_individual:
                         profile_metrics_clean[["Appearances"]].ffill(), color="#ff9900"
                     )
                 with ic2:
-                    st.caption("🛡️ Social Selling Index (SSI)")
-                    st.line_chart(profile_metrics_clean[["SSI"]].ffill(), color="#dc2626")
                     st.caption("👀 Profile Views")
                     st.line_chart(
                         profile_metrics_clean[["Profile views"]].ffill(), color="#1db954"
                     )
-                with ic3:
                     st.caption("📊 Weekly Post Impressions")
                     st.line_chart(
                         profile_metrics_clean[["Post impressions"]].ffill(), color="#0077b5"
